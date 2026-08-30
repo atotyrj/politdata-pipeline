@@ -7,6 +7,8 @@ import shutil
 import uuid
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from .change_set import (
     DEFAULT_CURRENT_CHANGE_SET_PATH,
@@ -18,6 +20,12 @@ from .normalization.payments import (
     PAYMENT_PATHS,
     normalize_report_payments,
     write_fragment,
+)
+from .normalization.organizations import (
+    ORGANIZATION_ADDRESS_SCHEMA,
+    ORGANIZATION_HEAD_SCHEMA,
+    ORGANIZATION_SCHEMA,
+    normalize_organization_card,
 )
 from .normalization.property_moneys import (
     extract_property_moneys,
@@ -32,6 +40,9 @@ from .report_details import (
     report_detail_content_hash,
     validate_report_detail_payload,
 )
+from .change_detection import (
+    organization_content_hash,
+)
 
 
 DEFAULT_REPORT_STATE_PATH = Path(
@@ -39,6 +50,9 @@ DEFAULT_REPORT_STATE_PATH = Path(
 )
 DEFAULT_REPORT_RAW_DIR = Path(
     "data/raw/report_details"
+)
+DEFAULT_ORGANIZATION_RAW_DIR = Path(
+    "data/raw/party_accounts"
 )
 DEFAULT_FRAGMENT_ROOT = Path(
     "data/interim/normalized_changes"
@@ -105,6 +119,96 @@ def _write_dynamic_fragment(path, rows):
             temp_path.unlink()
 
     return path
+
+
+def _write_schema_fragment(path, rows, schema):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(
+        path.stem + ".tmp." + uuid.uuid4().hex + path.suffix
+    )
+
+    try:
+        table = pa.Table.from_pylist(rows, schema=schema)
+        pq.write_table(
+            table,
+            temp_path,
+            compression="zstd",
+        )
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+    return path
+
+
+def _normalize_one_organization(
+    change,
+    raw_dir,
+    output_root,
+):
+    organization_id = str(change["organization_id"])
+
+    if change["change_type"] == "disappeared":
+        return {
+            "organization_id": organization_id,
+            "change_type": "disappeared",
+            "deleted": True,
+        }
+
+    raw_path = raw_dir / f"{organization_id}.json"
+    if not raw_path.exists():
+        raise FileNotFoundError(raw_path)
+
+    payload = _load_payload(raw_path)
+    record = payload.get("results")
+    if not isinstance(record, dict):
+        raise ValueError(
+            f"Invalid organization-card payload: {organization_id}"
+        )
+
+    actual_id = str(record.get("id"))
+    if actual_id != organization_id:
+        raise ValueError(
+            "Organization ID mismatch: "
+            f"expected={organization_id}, actual={actual_id}"
+        )
+
+    actual_hash = organization_content_hash(record)
+    expected_hash = change.get("new_content_hash")
+    if expected_hash and actual_hash != expected_hash:
+        raise ValueError(
+            "RAW semantic hash does not match change set: "
+            f"organization_id={organization_id}"
+        )
+
+    normalized = normalize_organization_card(record)
+    schemas = {
+        "organizations": ORGANIZATION_SCHEMA,
+        "organization_heads": ORGANIZATION_HEAD_SCHEMA,
+        "organization_addresses": ORGANIZATION_ADDRESS_SCHEMA,
+    }
+
+    for artifact, schema in schemas.items():
+        _write_schema_fragment(
+            output_root
+            / artifact
+            / f"{organization_id}.parquet",
+            normalized[artifact],
+            schema,
+        )
+
+    return {
+        "organization_id": organization_id,
+        "change_type": change["change_type"],
+        "deleted": False,
+        "content_hash": actual_hash,
+        "organization_rows": 1,
+        "head_rows": len(normalized["organization_heads"]),
+        "address_rows": len(
+            normalized["organization_addresses"]
+        ),
+    }
 
 
 def _normalize_one_report(
@@ -230,10 +334,11 @@ def _normalize_one_report(
     return summary
 
 
-def normalize_changed_report_fragments(
+def normalize_changed_fragments(
     change_set_path=DEFAULT_CURRENT_CHANGE_SET_PATH,
     report_state_path=DEFAULT_REPORT_STATE_PATH,
     raw_dir=DEFAULT_REPORT_RAW_DIR,
+    organization_raw_dir=DEFAULT_ORGANIZATION_RAW_DIR,
     fragment_root=DEFAULT_FRAGMENT_ROOT,
 ):
     """
@@ -246,6 +351,7 @@ def normalize_changed_report_fragments(
     change_set_path = Path(change_set_path)
     report_state_path = Path(report_state_path)
     raw_dir = Path(raw_dir)
+    organization_raw_dir = Path(organization_raw_dir)
     fragment_root = Path(fragment_root)
     change_set = load_change_set(change_set_path)
     run_id = change_set["run_id"]
@@ -254,18 +360,20 @@ def normalize_changed_report_fragments(
     if output_root.exists():
         raise FileExistsError(output_root)
 
-    state = pd.read_parquet(report_state_path)
-    state["report_id"] = state["report_id"].astype(str)
+    state_by_id = None
+    if change_set["report_changes"]:
+        state = pd.read_parquet(report_state_path)
+        state["report_id"] = state["report_id"].astype(str)
 
-    if state["report_id"].duplicated().any():
-        raise ValueError(
-            "Report detail state contains duplicate report IDs."
+        if state["report_id"].duplicated().any():
+            raise ValueError(
+                "Report detail state contains duplicate report IDs."
+            )
+
+        state_by_id = state.set_index(
+            "report_id",
+            drop=False,
         )
-
-    state_by_id = state.set_index(
-        "report_id",
-        drop=False,
-    )
     change_set = set_change_set_stage_status(
         change_set,
         "normalization",
@@ -277,6 +385,16 @@ def normalize_changed_report_fragments(
     )
 
     try:
+        organization_summaries = [
+            _normalize_one_organization(
+                change,
+                organization_raw_dir,
+                temp_root,
+            )
+            for change in change_set[
+                "organization_changes"
+            ]
+        ]
         summaries = []
         for change in change_set["report_changes"]:
             report_id = str(change["report_id"])
@@ -307,9 +425,16 @@ def normalize_changed_report_fragments(
             "change_set_path": str(change_set_path),
             "report_count": len(summaries),
             "reports": summaries,
-            "organization_normalization_pending": bool(
-                change_set["organization_changes"]
+            "organization_count": len(
+                organization_summaries
             ),
+            "organizations": organization_summaries,
+            "deleted_organization_ids": [
+                item["organization_id"]
+                for item in organization_summaries
+                if item["deleted"]
+            ],
+            "organization_normalization_pending": False,
         }
         temp_root.mkdir(parents=True, exist_ok=True)
         with (temp_root / "manifest.json").open(
@@ -326,22 +451,11 @@ def normalize_changed_report_fragments(
         fragment_root.mkdir(parents=True, exist_ok=True)
         os.replace(temp_root, output_root)
 
-        if change_set["organization_changes"]:
-            change_set = set_change_set_stage_status(
-                change_set,
-                "normalization",
-                "pending",
-                error=(
-                    "Report fragments completed; organization-card "
-                    "normalization is not implemented yet."
-                ),
-            )
-        else:
-            change_set = set_change_set_stage_status(
-                change_set,
-                "normalization",
-                "completed",
-            )
+        change_set = set_change_set_stage_status(
+            change_set,
+            "normalization",
+            "completed",
+        )
 
         save_change_set(change_set, change_set_path)
         return manifest
@@ -358,3 +472,9 @@ def normalize_changed_report_fragments(
         )
         save_change_set(change_set, change_set_path)
         raise
+
+
+def normalize_changed_report_fragments(*args, **kwargs):
+    """Backward-compatible name for the combined normalization runner."""
+
+    return normalize_changed_fragments(*args, **kwargs)
