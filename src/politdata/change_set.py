@@ -368,6 +368,47 @@ def merge_change_set_changes(
     return validate_change_set(merged)
 
 
+def set_change_set_stage_status(
+    change_set,
+    stage,
+    status,
+    *,
+    error=None,
+    at_utc=None,
+):
+    """Return a validated copy with one downstream stage updated."""
+
+    validate_change_set(change_set)
+
+    if stage not in STAGE_NAMES:
+        raise ValueError(f"Unknown change-set stage: {stage}")
+
+    if status not in STAGE_STATUSES:
+        raise ValueError(
+            f"Invalid change-set stage status: {status}"
+        )
+
+    updated = json.loads(json.dumps(change_set))
+    stage_state = updated["stages"][stage]
+    timestamp = at_utc or utc_now_iso()
+    stage_state["status"] = status
+    stage_state["error"] = error
+
+    if status == "running":
+        stage_state["started_at_utc"] = timestamp
+        stage_state["finished_at_utc"] = None
+    elif status in {
+        "completed",
+        "failed",
+        "skipped",
+    }:
+        if stage_state["started_at_utc"] is None:
+            stage_state["started_at_utc"] = timestamp
+        stage_state["finished_at_utc"] = timestamp
+
+    return validate_change_set(updated)
+
+
 def validate_change_set(change_set):
     required = {
         "schema_version",
