@@ -53,6 +53,54 @@ def test_person_name_latin_homoglyph():
     assert "O" not in result
 
 
+def test_person_name_uses_canonical_case():
+
+    assert (
+        normalize_person_name(
+            "ІВАНЕНКО іВАН іВАНОВИЧ",
+            "Фізична особа",
+        )
+        ==
+        "Іваненко Іван Іванович"
+    )
+
+
+def test_person_name_handles_hyphen_and_apostrophe():
+
+    assert (
+        normalize_person_name(
+            "ЛУК'ЯНЕНКО-ПЕТРЕНКО МАРІЯ",
+            "Фізична особа",
+        )
+        ==
+        "Лук'яненко-Петренко Марія"
+    )
+
+
+def test_person_name_handles_quotes_and_initials():
+
+    assert (
+        normalize_person_name(
+            '"ІВАНЕНКО І.І."',
+            "Фізична особа",
+        )
+        ==
+        '"Іваненко І. І."'
+    )
+
+
+def test_legal_entity_name_case_is_unchanged():
+
+    assert (
+        normalize_person_name(
+            "ТОВ ГОЛОС",
+            "Юридична особа",
+        )
+        ==
+        "ТОВ ГОЛОС"
+    )
+
+
 def test_account_wrapper_exact_real_iban():
 
     result = normalize_account_fields(

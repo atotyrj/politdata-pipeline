@@ -20,7 +20,7 @@ from politdata.normalization.accounts import (
 )
 
 
-NORMALIZATION_VERSION = "payments_v0_1"
+NORMALIZATION_VERSION = "payments_v0_2"
 
 
 # ============================================================
@@ -306,6 +306,29 @@ def normalize_person_name(
         " ",
         text,
     ).strip()
+
+    # Canonical personal-name casing. Capitalize whitespace- and
+    # hyphen-delimited components, but not letters after apostrophes.
+    text = text.lower()
+    text = re.sub(
+        r'(^|[\s\-"«(])([^\W\d_])',
+        lambda match: (
+            match.group(1)
+            + match.group(2).upper()
+        ),
+        text,
+        flags=re.UNICODE,
+    )
+
+    text = re.sub(
+        r"(?<!\w)([^\W\d_])\.\s*([^\W\d_])\.",
+        lambda match: (
+            f"{match.group(1).upper()}. "
+            f"{match.group(2).upper()}."
+        ),
+        text,
+        flags=re.UNICODE,
+    )
 
     return text or None
 
