@@ -59,6 +59,8 @@ def test_normalizes_only_changed_report_to_atomic_fragments(
                     "name": "Office",
                 }],
             },
+            "employees_by_civil_contract": "--",
+            "employees_by_employment_contract": "12",
         },
     }
     raw_path = raw_dir / "r1.json"
@@ -122,6 +124,12 @@ def test_normalizes_only_changed_report_to_atomic_fragments(
         / "realty"
         / "r1.parquet"
     ).exists()
+    employee_path = (
+        output / "report_sections" / "employee_counts" / "r1.parquet"
+    )
+    employees = pd.read_parquet(employee_path)
+    assert pd.isna(employees.loc[0, "employees_by_civil_contract"])
+    assert employees.loc[0, "employees_by_employment_contract"] == 12
     assert load_change_set(change_set_path)["stages"][
         "normalization"
     ]["status"] == "completed"

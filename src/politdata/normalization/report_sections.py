@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import re
 
+import pandas as pd
+
 
 NORMALIZATION_VERSION = (
     "report_sections_v0_1"
@@ -34,6 +36,64 @@ SECTION_PATHS = {
     "regional_offices":
         ("regional_offices",),
 }
+
+EMPLOYEE_SOURCE_COLUMNS = {
+    "employees_by_civil_contract_source":
+        "employees_by_civil_contract",
+    "employees_by_employment_contract_source":
+        "employees_by_employment_contract",
+}
+
+EMPLOYEE_MISSING_MARKERS = {
+    "", "-", "--", "—", "–", "null", "none", "nan",
+}
+
+
+def normalize_employee_counts(detail, **context):
+    """Create the validated single report-level employee-count row."""
+
+    row = {
+        "source_report_id": str(context["source_report_id"]),
+        "source_section": "employee_counts",
+        "source_row_index": 0,
+        "organization_id": str(context["organization_id"]),
+        "root_party_id": str(context["root_party_id"]),
+        "report_year": context["report_year"],
+        "report_quarter": context["report_quarter"],
+        "source_is_signed": bool(context["source_is_signed"]),
+        "source_signed_date": context["source_signed_date"],
+        "report_schema_version_source":
+            context["report_schema_version_source"],
+        "report_type_source": context["report_type_source"],
+        "is_party_office_source": context["is_party_office_source"],
+    }
+    for source_column in EMPLOYEE_SOURCE_COLUMNS:
+        raw_key = source_column.removesuffix("_source")
+        row[source_column] = scalar_or_json(detail.get(raw_key))
+
+    frame = pd.DataFrame([row])
+    for source_column, normalized_column in (
+        EMPLOYEE_SOURCE_COLUMNS.items()
+    ):
+        source = frame[source_column].astype("string")
+        stripped = source.str.strip()
+        cleaned = stripped.mask(
+            stripped.str.lower().isin(EMPLOYEE_MISSING_MARKERS),
+            pd.NA,
+        )
+        numeric = pd.to_numeric(cleaned, errors="coerce")
+        if (cleaned.notna() & numeric.isna()).any():
+            raise ValueError(
+                f"Unexpected non-numeric employee value in {source_column}."
+            )
+        if (numeric.notna() & (numeric != numeric.round())).any():
+            raise ValueError(
+                f"Fractional employee count in {source_column}."
+            )
+        frame[source_column] = source
+        frame[normalized_column] = numeric.astype("Int64")
+
+    return frame.to_dict(orient="records")
 
 
 def get_nested(

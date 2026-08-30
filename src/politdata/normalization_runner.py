@@ -34,6 +34,7 @@ from .normalization.property_moneys import (
 from .normalization.report_sections import (
     SECTION_PATHS,
     extract_section_rows,
+    normalize_employee_counts,
     normalize_source_row,
 )
 from .report_details import (
@@ -330,6 +331,30 @@ def _normalize_one_report(
             rows,
         )
         summary["report_sections"][section] = len(rows)
+
+    employee_rows = normalize_employee_counts(
+        detail,
+        source_report_id=report_id,
+        organization_id=context["organization_id"],
+        root_party_id=context["root_party_id"],
+        report_year=context["year"],
+        report_quarter=context["quarter"],
+        source_is_signed=source_is_signed,
+        source_signed_date=signed_date,
+        report_schema_version_source=detail.get("schema_version"),
+        report_type_source=detail.get("report_type"),
+        is_party_office_source=(
+            state_row.get("entity_type") == "office"
+        ),
+    )
+    _write_dynamic_fragment(
+        output_root
+        / "report_sections"
+        / "employee_counts"
+        / f"{report_id}.parquet",
+        employee_rows,
+    )
+    summary["report_sections"]["employee_counts"] = 1
 
     return summary
 
