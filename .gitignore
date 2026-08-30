@@ -3,6 +3,7 @@ data/raw/
 data/interim/
 data/processed/
 logs/
+outputs/
 
 # Python
 __pycache__/
