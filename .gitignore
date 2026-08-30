@@ -1,0 +1,21 @@
+# Local data
+data/raw/
+data/interim/
+data/processed/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Environments and secrets
+.venv/
+.env
+.env.*
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/

@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/politdata/__init__.py
+src/politdata_pipeline.egg-info/PKG-INFO
+src/politdata_pipeline.egg-info/SOURCES.txt
+src/politdata_pipeline.egg-info/dependency_links.txt
+src/politdata_pipeline.egg-info/requires.txt
+src/politdata_pipeline.egg-info/top_level.txt
