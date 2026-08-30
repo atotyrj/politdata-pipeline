@@ -11,6 +11,10 @@ import pandas as pd
 
 CHANGE_SET_SCHEMA_VERSION = 1
 
+DEFAULT_CURRENT_CHANGE_SET_PATH = Path(
+    "data/interim/change_sets/current.json"
+)
+
 CHANGE_TYPES = {
     "new",
     "meaningful_change",
@@ -292,6 +296,76 @@ def create_change_set(
 
     validate_change_set(change_set)
     return change_set
+
+
+def merge_change_set_changes(
+    change_set,
+    *,
+    organization_changes=None,
+    report_changes=None,
+):
+    """
+    Merge ingestion results into an existing change set.
+
+    Repeated report-detail batches are accumulated by report ID. The first
+    observed old hash is retained so downstream reconciliation still sees
+    the complete change across the run.
+    """
+
+    validate_change_set(change_set)
+
+    merged = json.loads(json.dumps(change_set))
+
+    if organization_changes is not None:
+        merged["organization_changes"] = list(
+            organization_changes
+        )
+
+    if report_changes is not None:
+        by_report_id = {
+            item["report_id"]: item
+            for item in merged["report_changes"]
+        }
+
+        for item in report_changes:
+            report_id = item["report_id"]
+            existing = by_report_id.get(report_id)
+
+            if existing is None:
+                by_report_id[report_id] = item
+                continue
+
+            updated = dict(item)
+            updated["old_content_hash"] = existing.get(
+                "old_content_hash"
+            )
+
+            if existing.get("change_type") == "new":
+                updated["change_type"] = "new"
+
+            by_report_id[report_id] = updated
+
+        merged["report_changes"] = sorted(
+            by_report_id.values(),
+            key=lambda item: item["report_id"],
+        )
+
+    merged["affected_organization_ids"] = _sorted_unique(
+        [
+            item.get("organization_id")
+            for item in merged["organization_changes"]
+        ]
+        + [
+            item.get("organization_id")
+            for item in merged["report_changes"]
+        ]
+    )
+    merged["affected_report_ids"] = _sorted_unique(
+        item.get("report_id")
+        for item in merged["report_changes"]
+    )
+
+    return validate_change_set(merged)
 
 
 def validate_change_set(change_set):

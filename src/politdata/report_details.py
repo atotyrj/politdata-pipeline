@@ -13,6 +13,15 @@ import uuid
 import pandas as pd
 import requests
 
+from .change_set import (
+    DEFAULT_CURRENT_CHANGE_SET_PATH,
+    create_change_set,
+    load_change_set,
+    merge_change_set_changes,
+    report_changes_from_states,
+    save_change_set,
+)
+
 
 DEFAULT_BASE_URL = (
     "https://politdata.nazk.gov.ua/api/v2"
@@ -390,6 +399,42 @@ def try_save_state(
         return False
 
 
+def update_report_change_set(
+    previous_state,
+    current_state,
+    change_set_path=DEFAULT_CURRENT_CHANGE_SET_PATH,
+):
+    """Append semantic report changes from one batch to the current run."""
+
+    if change_set_path is None:
+        return None
+
+    report_changes = report_changes_from_states(
+        previous_state,
+        current_state,
+    )
+    change_set_path = Path(change_set_path)
+
+    if change_set_path.exists():
+        change_set = load_change_set(
+            change_set_path
+        )
+        change_set = merge_change_set_changes(
+            change_set,
+            report_changes=report_changes,
+        )
+    else:
+        change_set = create_change_set(
+            report_changes=report_changes,
+        )
+
+    save_change_set(
+        change_set,
+        change_set_path,
+    )
+    return change_set
+
+
 # ============================================================
 # STATE
 # ============================================================
@@ -744,6 +789,7 @@ def run_report_detail_batch(
     base_url=DEFAULT_BASE_URL,
     raw_dir=DEFAULT_RAW_DIR,
     state_path=DEFAULT_STATE_PATH,
+    change_set_path=DEFAULT_CURRENT_CHANGE_SET_PATH,
 ):
 
     from tqdm.auto import tqdm
@@ -760,6 +806,8 @@ def run_report_detail_batch(
         selected_reports,
         state_path=state_path,
     )
+
+    previous_state = state.copy()
 
     # Recover valid RAW files that may exist
     # after an interrupted run.
@@ -840,6 +888,12 @@ def run_report_detail_batch(
             "reports_with_paper_this_run":
                 0,
         }
+
+        update_report_change_set(
+            previous_state,
+            state,
+            change_set_path=change_set_path,
+        )
 
         return (
             summary,
@@ -1103,6 +1157,12 @@ def run_report_detail_batch(
         "reports_with_paper_this_run":
             len(paper_reports),
     }
+
+    update_report_change_set(
+        previous_state,
+        state,
+        change_set_path=change_set_path,
+    )
 
     return (
         summary,

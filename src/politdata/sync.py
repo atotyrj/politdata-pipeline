@@ -23,6 +23,13 @@ from .change_detection import (
     organization_content_hash,
 )
 
+from .change_set import (
+    DEFAULT_CURRENT_CHANGE_SET_PATH,
+    create_change_set,
+    organization_changes_from_sync_log,
+    save_change_set,
+)
+
 from .refresh import (
     DEFAULT_REFRESH_STATE_PATH,
     initialize_refresh_state,
@@ -170,6 +177,7 @@ def run_organization_sync(
     enable_rolling_refresh=True,
     rolling_refresh_interval_days=7,
     rolling_refresh_limit=1400,
+    change_set_path=DEFAULT_CURRENT_CHANGE_SET_PATH,
 ):
     """
     Run one organization synchronization cycle.
@@ -767,6 +775,31 @@ def run_organization_sync(
         log_dir
         / f"sync_{log_timestamp}.json"
     )
+
+    if change_set_path is not None and committed:
+        organization_changes = (
+            organization_changes_from_sync_log(
+                run_log
+            )
+        )
+        change_set = create_change_set(
+            organization_changes=organization_changes,
+            created_at_utc=run_started.isoformat(),
+        )
+        save_change_set(
+            change_set,
+            change_set_path,
+        )
+
+        run_log["change_set_path"] = str(
+            change_set_path
+        )
+        run_log["change_set_run_id"] = (
+            change_set["run_id"]
+        )
+    else:
+        run_log["change_set_path"] = None
+        run_log["change_set_run_id"] = None
 
     _write_json(
         log_path,

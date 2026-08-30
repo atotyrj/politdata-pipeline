@@ -4,6 +4,7 @@ import pytest
 from politdata.change_set import (
     create_change_set,
     load_change_set,
+    merge_change_set_changes,
     organization_changes_from_sync_log,
     report_changes_from_states,
     save_change_set,
@@ -138,3 +139,46 @@ def test_change_set_json_round_trip(tmp_path):
     save_change_set(change_set, path)
 
     assert load_change_set(path) == change_set
+
+
+def test_merge_change_set_accumulates_report_batches():
+    change_set = create_change_set(
+        run_id="run-1",
+        created_at_utc="2026-08-30T00:00:00+00:00",
+        report_changes=[{
+            "report_id": "r1",
+            "organization_id": "o1",
+            "change_type": "new",
+            "old_content_hash": None,
+            "new_content_hash": "first",
+        }],
+    )
+
+    merged = merge_change_set_changes(
+        change_set,
+        report_changes=[
+            {
+                "report_id": "r1",
+                "organization_id": "o1",
+                "change_type": "meaningful_change",
+                "old_content_hash": "first",
+                "new_content_hash": "second",
+            },
+            {
+                "report_id": "r2",
+                "organization_id": "o2",
+                "change_type": "new",
+                "old_content_hash": None,
+                "new_content_hash": "initial",
+            },
+        ],
+    )
+
+    assert merged["affected_report_ids"] == ["r1", "r2"]
+    assert merged["report_changes"][0] == {
+        "report_id": "r1",
+        "organization_id": "o1",
+        "change_type": "new",
+        "old_content_hash": None,
+        "new_content_hash": "second",
+    }
