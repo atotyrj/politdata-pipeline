@@ -48,6 +48,13 @@ change-set, then runs the existing changed-only downstream pipeline. Use
 lists or fetch new report details: that will be enabled only after the report
 selection policy is moved out of the exploratory notebook into a tested module.
 
+To also refresh report lists and download a bounded number of newly selected
+report details, opt in explicitly:
+
+```powershell
+politdata ingest --organization-limit 5 --report-limit 10 --json
+```
+
 After a committed ingestion run has created a change set, inspect it first:
 
 ```powershell

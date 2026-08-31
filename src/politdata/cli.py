@@ -82,6 +82,10 @@ def build_parser():
         help="Maximum organization cards this online run may fetch.",
     )
     ingest_parser.add_argument(
+        "--report-limit", type=int,
+        help="Opt in to bounded report discovery/detail; maximum details to fetch.",
+    )
+    ingest_parser.add_argument(
         "--change-set",
         type=_change_set_path,
         default=DEFAULT_CURRENT_CHANGE_SET_PATH,
@@ -122,6 +126,7 @@ def main(argv=None):
                 organization_limit=args.organization_limit,
                 change_set_path=args.change_set,
                 run_downstream=not args.skip_downstream,
+                report_limit=args.report_limit,
             ),
             as_json=args.json,
         )
