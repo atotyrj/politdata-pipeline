@@ -61,6 +61,15 @@ def run_limited_organization_ingestion(
             for item in sync.get("results", [])
             if item.get("status") in {"new", "meaningful_change"}
         ]
+        if not changed_ids:
+            result["reports"] = {"status": "no_changed_organizations"}
+            if run_downstream:
+                result["downstream"] = run_incremental_downstream(
+                    change_set_path=change_set_path
+                )
+            else:
+                result["downstream"] = {"status": "not_requested"}
+            return result
         manifest = pd.read_parquet(options.get("committed_manifest_path", "data/interim/manifests/organization_manifest_committed.parquet"))
         discovery_summary, _ = run_report_discovery_batch(
             manifest, organization_ids=changed_ids, limit=organization_limit

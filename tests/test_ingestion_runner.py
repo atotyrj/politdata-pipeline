@@ -29,3 +29,18 @@ def test_limited_online_runner_passes_limit_and_runs_downstream(monkeypatch, tmp
 def test_limited_online_runner_requires_positive_limit():
     with pytest.raises(ValueError, match="positive"):
         run_limited_organization_ingestion(organization_limit=0)
+
+
+def test_report_flow_skips_stateful_report_stages_without_changes(monkeypatch):
+    monkeypatch.setattr(
+        "politdata.ingestion_runner.run_organization_sync",
+        lambda **_: {"results": []},
+    )
+    monkeypatch.setattr(
+        "politdata.ingestion_runner.run_report_discovery_batch",
+        lambda **_: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    result = run_limited_organization_ingestion(
+        organization_limit=1, report_limit=1, run_downstream=False
+    )
+    assert result["reports"]["status"] == "no_changed_organizations"
