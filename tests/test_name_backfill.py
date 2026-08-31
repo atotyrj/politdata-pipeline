@@ -2,6 +2,8 @@ import pandas as pd
 import pytest
 
 from politdata.name_backfill import (
+    build_name_backfill_validation,
+    promote_name_backfill_validation,
     standardize_person_names,
     validate_name_backfill,
 )
@@ -48,3 +50,38 @@ def test_validation_rejects_any_other_column_change():
     after.loc[0, "payment_amount"] = 99
     with pytest.raises(AssertionError):
         validate_name_backfill(before, after)
+
+
+def test_validation_promotion_is_backed_up_and_recoverable(tmp_path):
+    normalized = tmp_path / "normalized"
+    enriched = tmp_path / "enriched"
+    for root in (normalized, enriched):
+        path = root / "payments" / "other_incomes.parquet"
+        path.parent.mkdir(parents=True)
+        _frame().to_parquet(path, index=False)
+
+    validation = tmp_path / "validation"
+    build_name_backfill_validation(
+        normalized,
+        enriched,
+        validation,
+        sections=["other_incomes"],
+    )
+
+    backup = tmp_path / "backup"
+    manifest = promote_name_backfill_validation(
+        validation,
+        normalized,
+        enriched,
+        backup,
+        sections=["other_incomes"],
+    )
+    promoted = pd.read_parquet(
+        normalized / "payments" / "other_incomes.parquet"
+    )
+    original = pd.read_parquet(
+        backup / "normalized" / "payments" / "other_incomes.parquet"
+    )
+    assert promoted.loc[0, "payer_name_normalized"] == "Іваненко Іван"
+    assert original.loc[0, "payer_name_normalized"] == "ІВАНЕНКО ІВАН"
+    assert len(manifest["files"]) == 2

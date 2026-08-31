@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import uuid
+import hashlib
 
 import pandas as pd
 from pandas.testing import assert_frame_equal
@@ -101,6 +102,8 @@ def build_name_backfill_validation(
     normalized_root,
     enriched_root,
     output_root,
+    *,
+    sections=None,
 ):
     """Build an atomic validation copy; production datasets are untouched."""
 
@@ -115,12 +118,13 @@ def build_name_backfill_validation(
 
     try:
         summaries = {}
+        sections = tuple(sections or PAYMENT_PATHS)
         for layer, root in (
             ("normalized", normalized_root),
             ("enriched", enriched_root),
         ):
             summaries[layer] = {}
-            for section in PAYMENT_PATHS:
+            for section in sections:
                 source = root / "payments" / f"{section}.parquet"
                 if not source.exists():
                     raise FileNotFoundError(source)
@@ -154,3 +158,111 @@ def build_name_backfill_validation(
         if temp.exists():
             shutil.rmtree(temp)
         raise
+
+
+def _file_hash(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def promote_name_backfill_validation(
+    validation_root,
+    normalized_root,
+    enriched_root,
+    backup_root,
+    *,
+    sections=None,
+):
+    """Promote a proven validation copy with backup and automatic rollback."""
+
+    validation_root = Path(validation_root)
+    normalized_root = Path(normalized_root)
+    enriched_root = Path(enriched_root)
+    backup_root = Path(backup_root)
+    if backup_root.exists():
+        raise FileExistsError(backup_root)
+    with (validation_root / "manifest.json").open(
+        "r", encoding="utf-8"
+    ) as file:
+        validation_manifest = json.load(file)
+    if validation_manifest.get("normalization_version") != NORMALIZATION_VERSION:
+        raise ValueError("Validation copy uses another normalization version.")
+    if validation_manifest.get("production_modified") is not False:
+        raise ValueError("Validation manifest does not prove isolation.")
+
+    sections = tuple(sections or PAYMENT_PATHS)
+    roots = {
+        "normalized": normalized_root,
+        "enriched": enriched_root,
+    }
+    files = []
+    for layer, root in roots.items():
+        for section in sections:
+            current = root / "payments" / f"{section}.parquet"
+            candidate = (
+                validation_root / layer / "payments" / f"{section}.parquet"
+            )
+            if not current.exists() or not candidate.exists():
+                raise FileNotFoundError(
+                    current if not current.exists() else candidate
+                )
+            before = pd.read_parquet(current)
+            after = pd.read_parquet(candidate)
+            validate_name_backfill(before, after)
+            files.append((layer, section, current, candidate))
+
+    backup_root.mkdir(parents=True)
+    records = []
+    for layer, section, current, candidate in files:
+        backup = backup_root / layer / "payments" / current.name
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(current, backup)
+        records.append({
+            "layer": layer,
+            "section": section,
+            "before_sha256": _file_hash(backup),
+            "after_sha256": _file_hash(candidate),
+            "backup": str(backup),
+        })
+
+    replaced = []
+    try:
+        for layer, section, current, candidate in files:
+            temp = current.with_name(
+                current.name + ".tmp." + uuid.uuid4().hex
+            )
+            shutil.copy2(candidate, temp)
+            os.replace(temp, current)
+            replaced.append((layer, section, current))
+
+        for layer, section, current, _ in files:
+            backup = backup_root / layer / "payments" / current.name
+            validate_name_backfill(
+                pd.read_parquet(backup),
+                pd.read_parquet(current),
+            )
+    except Exception:
+        for layer, section, current in reversed(replaced):
+            backup = backup_root / layer / "payments" / current.name
+            temp = current.with_name(
+                current.name + ".rollback." + uuid.uuid4().hex
+            )
+            shutil.copy2(backup, temp)
+            os.replace(temp, current)
+        raise
+
+    promotion_manifest = {
+        "schema_version": 1,
+        "normalization_version": NORMALIZATION_VERSION,
+        "validation_root": str(validation_root),
+        "backup_root": str(backup_root),
+        "files": records,
+    }
+    with (backup_root / "promotion_manifest.json").open(
+        "w", encoding="utf-8"
+    ) as file:
+        json.dump(promotion_manifest, file, ensure_ascii=False, indent=2)
+    return promotion_manifest
