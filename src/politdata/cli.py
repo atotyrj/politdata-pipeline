@@ -9,6 +9,7 @@ from pathlib import Path
 from .change_set import DEFAULT_CURRENT_CHANGE_SET_PATH, load_change_set
 from .ingestion_preflight import build_ingestion_preflight
 from .incremental_pipeline import run_incremental_downstream
+from .ingestion_runner import run_limited_organization_ingestion
 
 
 def change_set_summary(change_set):
@@ -70,6 +71,28 @@ def build_parser():
             help="Print machine-readable JSON.",
         )
 
+    ingest_parser = subparsers.add_parser(
+        "ingest",
+        help="Explicit bounded online organization sync, then downstream.",
+    )
+    ingest_parser.add_argument(
+        "--organization-limit",
+        required=True,
+        type=int,
+        help="Maximum organization cards this online run may fetch.",
+    )
+    ingest_parser.add_argument(
+        "--change-set",
+        type=_change_set_path,
+        default=DEFAULT_CURRENT_CHANGE_SET_PATH,
+    )
+    ingest_parser.add_argument(
+        "--skip-downstream",
+        action="store_true",
+        help="Create the factual change set but do not process it yet.",
+    )
+    ingest_parser.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -91,6 +114,17 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == "preflight":
         _print_result(build_ingestion_preflight(), as_json=args.json)
+        return 0
+
+    if args.command == "ingest":
+        _print_result(
+            run_limited_organization_ingestion(
+                organization_limit=args.organization_limit,
+                change_set_path=args.change_set,
+                run_downstream=not args.skip_downstream,
+            ),
+            as_json=args.json,
+        )
         return 0
 
     path = args.change_set

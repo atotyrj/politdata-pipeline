@@ -177,6 +177,7 @@ def run_organization_sync(
     enable_rolling_refresh=True,
     rolling_refresh_interval_days=7,
     rolling_refresh_limit=1400,
+    candidate_limit=None,
     change_set_path=DEFAULT_CURRENT_CHANGE_SET_PATH,
 ):
     """
@@ -343,6 +344,12 @@ def run_organization_sync(
     candidate_ids = sorted(
         candidate_reasons.keys()
     )
+
+    if candidate_limit is not None:
+        candidate_limit = int(candidate_limit)
+        if candidate_limit <= 0:
+            raise ValueError("candidate_limit must be positive.")
+        candidate_ids = candidate_ids[:candidate_limit]
 
     # These fetches must succeed before
     # discovery may be committed.

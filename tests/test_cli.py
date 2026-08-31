@@ -33,3 +33,8 @@ def test_preflight_cli_delegates_to_read_only_check(monkeypatch, capsys):
     )
     assert main(["preflight", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["writes"] == 0
+
+
+def test_ingest_cli_requires_explicit_limit():
+    with pytest.raises(SystemExit):
+        main(["ingest"])

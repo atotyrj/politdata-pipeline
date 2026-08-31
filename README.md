@@ -36,6 +36,18 @@ politdata preflight --json
 the committed organization baseline and ingestion state files are readable, and
 whether a previous change set is still marked `running`.
 
+The first online command is intentionally narrow and requires a hard limit:
+
+```powershell
+politdata ingest --organization-limit 5 --json
+```
+
+It fetches at most five candidate organization cards, saves a factual
+change-set, then runs the existing changed-only downstream pipeline. Use
+`--skip-downstream` to stop after the change-set. It does not yet refresh report
+lists or fetch new report details: that will be enabled only after the report
+selection policy is moved out of the exploratory notebook into a tested module.
+
 After a committed ingestion run has created a change set, inspect it first:
 
 ```powershell
