@@ -87,6 +87,74 @@ REFERENCE_IDENTITY_COLUMNS = (
 )
 
 
+HOLOS_PARTY_CODE = "39651598"
+HOLOS_PRIVATE_INCOME_EXPECTED = {
+    "monetary_contributions": 1_194,
+    "other_contributions": 182,
+    "other_incomes": 251,
+}
+HOLOS_ORGANIZATION_LEVEL_EXPECTED = {
+    "central": 947,
+    "office": 680,
+}
+
+
+def validate_party_income_benchmark(
+    payment_root,
+    *,
+    party_code=HOLOS_PARTY_CODE,
+    expected_sections=HOLOS_PRIVATE_INCOME_EXPECTED,
+    expected_levels=HOLOS_ORGANIZATION_LEVEL_EXPECTED,
+):
+    """Validate a known real-data coverage benchmark for private income."""
+
+    payment_root = Path(payment_root)
+    frames = []
+    actual_sections = {}
+    for section in expected_sections:
+        frame = pd.read_parquet(
+            payment_root / f"{section}.parquet",
+            columns=[
+                "party_code",
+                "organization_level",
+                "payment_amount",
+            ],
+        )
+        selected = frame[
+            frame["party_code"].astype("string").str.strip().eq(
+                str(party_code)
+            )
+        ].copy()
+        actual_sections[section] = len(selected)
+        frames.append(selected)
+
+    if actual_sections != dict(expected_sections):
+        raise RuntimeError(
+            "Party income section benchmark changed: "
+            f"expected={dict(expected_sections)}, actual={actual_sections}"
+        )
+    combined = pd.concat(frames, ignore_index=True)
+    actual_levels = {
+        str(key): int(value)
+        for key, value in combined["organization_level"]
+        .value_counts(dropna=False).items()
+    }
+    if actual_levels != dict(expected_levels):
+        raise RuntimeError(
+            "Party income organization-level benchmark changed: "
+            f"expected={dict(expected_levels)}, actual={actual_levels}"
+        )
+    return {
+        "party_code": str(party_code),
+        "rows": len(combined),
+        "payment_amount_sum": str(
+            combined["payment_amount"].sum(skipna=True)
+        ),
+        "sections": actual_sections,
+        "organization_levels": actual_levels,
+    }
+
+
 def parquet_row_count(
     path,
 ) -> int:
@@ -576,10 +644,21 @@ def validate_enriched_output(
     )
 
 
+    party_income_benchmark = (
+        validate_party_income_benchmark(
+            output_root
+            / "payments"
+        )
+    )
+
+
     return {
         "row_counts":
             counts,
 
         "payment_reference_identity":
             payment_identity,
+
+        "party_income_benchmark":
+            party_income_benchmark,
     }
