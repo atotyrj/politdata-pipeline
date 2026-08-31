@@ -43,12 +43,18 @@ def select_official_reports(reports):
         profile["signed_instance_count"] > 1, "selection_status"
     ] = "multiple_signed"
 
-    selected = instances[instances["is_signed"]].merge(
+    signed = instances[instances["is_signed"]].copy()
+    signed["_signed_sort"] = pd.to_datetime(signed["signed_date"], errors="coerce")
+    signed = signed.sort_values([*REPORT_KEY, "_signed_sort", "report_id"])
+    selected = signed.merge(
         profile[list(REPORT_KEY) + ["selection_status"]],
         on=list(REPORT_KEY),
         how="inner",
     )
-    selected = selected[selected["selection_status"] == "unique_signed"]
+    selected = selected[selected["selection_status"].isin({
+        "unique_signed", "multiple_signed",
+    })]
+    selected = selected.groupby(list(REPORT_KEY), dropna=False).tail(1)
     selected = selected[list(REPORT_KEY) + ["report_id"]].rename(
         columns={"report_id": "selected_report_id"}
     )
@@ -59,6 +65,7 @@ def select_official_reports(reports):
     )
     instances["selection_method"] = instances["selection_status"].map({
         "unique_signed": "unique_signed",
+        "multiple_signed": "latest_of_multiple_signed",
     })
     instances["instance_selection_role"] = "unsigned_unresolved"
     instances.loc[
@@ -89,3 +96,42 @@ def selected_report_manifest(reports):
 
     instances, profile = select_official_reports(reports)
     return instances[instances["is_selected_report"]].copy(), profile
+
+
+def merge_analysis_overrides(instances, previous_analysis):
+    """Attach still-valid manual overrides to current official selections.
+
+    Overrides are preserved only if their chosen report still belongs to the
+    same logical period. Invalidated overrides are reported, never applied.
+    """
+
+    selected = instances[instances["is_selected_report"]].copy()
+    selected["official_selected_report_id"] = selected["selected_report_id"]
+    selected["analysis_selected_report_id"] = selected["selected_report_id"]
+    selected["analysis_selection_method"] = "official_selected_signed_report"
+    selected["analysis_override"] = False
+    selected["override_reason"] = None
+    selected["continuity_exact"] = None
+    if previous_analysis.empty or "analysis_override" not in previous_analysis:
+        return selected, pd.DataFrame()
+
+    previous = previous_analysis[previous_analysis["analysis_override"]].copy()
+    valid_report_keys = {
+        (*key, str(report_id))
+        for key, report_id in zip(
+            instances[list(REPORT_KEY)].itertuples(index=False, name=None),
+            instances["report_id"],
+        )
+    }
+    invalid = []
+    for _, override in previous.iterrows():
+        key = tuple(override[column] for column in REPORT_KEY)
+        chosen = str(override["analysis_selected_report_id"])
+        mask = (selected[list(REPORT_KEY)] == pd.Series(key, index=REPORT_KEY)).all(axis=1)
+        if (*key, chosen) not in valid_report_keys or not mask.any():
+            invalid.append({**{column: override[column] for column in REPORT_KEY}, "analysis_selected_report_id": chosen})
+            continue
+        index = selected.index[mask][0]
+        for column in ("analysis_selected_report_id", "analysis_selection_method", "analysis_override", "override_reason", "continuity_exact"):
+            selected.at[index, column] = override[column]
+    return selected, pd.DataFrame(invalid)
