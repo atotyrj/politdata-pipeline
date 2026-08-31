@@ -74,6 +74,7 @@ def test_builds_scoped_reference_frames_with_existing_builders():
     assert frames["report_context"][
         "source_report_id"
     ].tolist() == ["r1"]
+    assert frames["report_context"]["continuity_exact"].tolist() == [False]
     assert len(frames["report_account_reference"]) == 1
     assert len(frames["state_funding_account_reference"]) == 1
 

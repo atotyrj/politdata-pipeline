@@ -287,6 +287,7 @@ def derive_payment_enrichment(
     return pd.DataFrame(
         output,
         index=df.index,
+        columns=DERIVED_COLUMNS,
     )
 
 

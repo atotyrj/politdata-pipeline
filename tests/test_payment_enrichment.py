@@ -1,4 +1,10 @@
 
+import pandas as pd
+
+from politdata.enrichment.payment_batch import (
+    DERIVED_COLUMNS,
+    derive_payment_enrichment,
+)
 from politdata.enrichment.payments import (
     STATE_STATUTORY_FUNDING,
     classify_party_account,
@@ -6,6 +12,17 @@ from politdata.enrichment.payments import (
     classify_internal_transfer_funding_source,
     classify_payment,
 )
+
+
+def test_empty_derived_payment_frame_keeps_contract_columns():
+
+    result = derive_payment_enrichment(
+        pd.DataFrame(),
+        section="monetary_contributions",
+    )
+
+    assert list(result.columns) == list(DERIVED_COLUMNS)
+    assert result.empty
 
 
 def test_confirmed_state_account_overrides_declared_current_type():

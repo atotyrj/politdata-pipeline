@@ -249,6 +249,11 @@ def build_incremental_reference_frames(
         manifest,
         full_org_ref,
     )
+    # The full reference layer carries this continuity contract.
+    # Incremental report-context builds are conservative until a
+    # dedicated continuity resolver supplies a positive match.
+    if "continuity_exact" not in report_context.columns:
+        report_context["continuity_exact"] = False
     property_moneys = property_moneys[
         property_moneys["source_report_id"].astype(str).isin(
             active_report_ids
