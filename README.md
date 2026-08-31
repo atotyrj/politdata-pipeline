@@ -13,3 +13,36 @@ Local development project for downloading, cleaning, enriching, transforming, va
 - `data/interim/` - intermediate data
 - `data/processed/` - processed data
 - `logs/` - local logs
+
+## Safe incremental operation
+
+The project deliberately separates online RAW ingestion from downstream
+processing. The command-line interface below never contacts the source API and
+never starts a RAW scan.
+
+Install the local package once in the activated virtual environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+After a committed ingestion run has created a change set, inspect it first:
+
+```powershell
+politdata status --change-set data/interim/change_sets/current.json --json
+```
+
+Run (or safely resume) only its changed-only downstream work:
+
+```powershell
+politdata downstream --change-set data/interim/change_sets/current.json --json
+```
+
+`downstream` skips a change set with no organization or report changes. For a
+partially completed change set it resumes pending or failed stages, but refuses
+an ambiguous stage marked `running`; reconcile that state before retrying.
+
+Do not replace `current.json` merely to test the command. Use a separate
+validation path for an isolated no-change control run. GitHub scheduling and
+public publication remain a later deployment step, after online ingestion is
+put behind an explicit, reviewed command.

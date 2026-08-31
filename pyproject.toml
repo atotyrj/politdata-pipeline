@@ -13,6 +13,9 @@ dependencies = [
     "tqdm>=4.67",
 ]
 
+[project.scripts]
+politdata = "politdata.cli:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
