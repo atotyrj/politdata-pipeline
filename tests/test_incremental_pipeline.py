@@ -1,5 +1,6 @@
 from politdata.change_set import create_change_set, load_change_set, save_change_set
 from politdata.incremental_pipeline import run_incremental_downstream
+import pytest
 
 
 def test_no_change_run_skips_all_downstream_stages(tmp_path):
@@ -59,3 +60,19 @@ def test_pipeline_orders_stages_and_resumes_completed_work(tmp_path, monkeypatch
     result = run_incremental_downstream(path)
     assert calls == ["promotion", "plan", "references", "enrichment", "qa"]
     assert result["status"] == "completed"
+
+
+def test_pipeline_refuses_ambiguous_running_stage(tmp_path):
+    path = tmp_path / "change.json"
+    change = create_change_set(
+        run_id="run-2",
+        report_changes=[{
+            "report_id": "r1", "organization_id": "o1",
+            "change_type": "new", "old_content_hash": None,
+            "new_content_hash": "hash",
+        }],
+    )
+    change["stages"]["normalization"]["status"] = "running"
+    save_change_set(change, path)
+    with pytest.raises(RuntimeError, match="reconcile"):
+        run_incremental_downstream(path)
