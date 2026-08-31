@@ -24,3 +24,12 @@ def test_cli_refuses_missing_change_set_without_starting_ingestion(tmp_path):
     missing = tmp_path / "missing.json"
     with pytest.raises(SystemExit, match="will not start a RAW scan"):
         main(["downstream", "--change-set", str(missing)])
+
+
+def test_preflight_cli_delegates_to_read_only_check(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "politdata.cli.build_ingestion_preflight",
+        lambda: {"mode": "read_only_preflight", "writes": 0},
+    )
+    assert main(["preflight", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["writes"] == 0

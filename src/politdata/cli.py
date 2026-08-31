@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from .change_set import DEFAULT_CURRENT_CHANGE_SET_PATH, load_change_set
+from .ingestion_preflight import build_ingestion_preflight
 from .incremental_pipeline import run_incremental_downstream
 
 
@@ -45,6 +46,7 @@ def build_parser():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     for command, help_text in (
+        ("preflight", "Read-only readiness check before online ingestion."),
         ("status", "Read and summarize a change set without writing data."),
         (
             "downstream",
@@ -52,15 +54,16 @@ def build_parser():
         ),
     ):
         command_parser = subparsers.add_parser(command, help=help_text)
-        command_parser.add_argument(
-            "--change-set",
-            type=_change_set_path,
-            default=DEFAULT_CURRENT_CHANGE_SET_PATH,
-            help=(
-                "Path to an existing change set "
-                f"(default: {DEFAULT_CURRENT_CHANGE_SET_PATH})."
-            ),
-        )
+        if command != "preflight":
+            command_parser.add_argument(
+                "--change-set",
+                type=_change_set_path,
+                default=DEFAULT_CURRENT_CHANGE_SET_PATH,
+                help=(
+                    "Path to an existing change set "
+                    f"(default: {DEFAULT_CURRENT_CHANGE_SET_PATH})."
+                ),
+            )
         command_parser.add_argument(
             "--json",
             action="store_true",
@@ -86,6 +89,10 @@ def _print_result(value, *, as_json):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.command == "preflight":
+        _print_result(build_ingestion_preflight(), as_json=args.json)
+        return 0
+
     path = args.change_set
 
     if not path.exists():

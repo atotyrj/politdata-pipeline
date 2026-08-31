@@ -26,6 +26,16 @@ Install the local package once in the activated virtual environment:
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
+Before any future online run, inspect only the local readiness state:
+
+```powershell
+politdata preflight --json
+```
+
+`preflight` makes zero network requests and writes nothing. It reports whether
+the committed organization baseline and ingestion state files are readable, and
+whether a previous change set is still marked `running`.
+
 After a committed ingestion run has created a change set, inspect it first:
 
 ```powershell

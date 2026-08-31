@@ -6,9 +6,11 @@ from politdata.change_set import (
     set_change_set_stage_status,
 )
 from politdata.promotion import (
+    _replace_directory_with_retry,
     load_promotion_state,
     promote_normalized_fragments,
 )
+import os
 
 
 def _write_run(
@@ -247,3 +249,26 @@ def test_report_promotion_indexes_latest_partition(tmp_path):
         "deleted": False,
         "content_hash": "new",
     }
+
+
+def test_directory_promotion_retries_transient_windows_lock(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    (source / "fragment.txt").write_text("ok", encoding="utf-8")
+    real_replace = os.replace
+    attempts = []
+
+    def flaky_replace(from_path, to_path):
+        attempts.append((from_path, to_path))
+        if len(attempts) < 3:
+            raise PermissionError(5, "Access is denied")
+        return real_replace(from_path, to_path)
+
+    monkeypatch.setattr("politdata.promotion.os.replace", flaky_replace)
+    monkeypatch.setattr("politdata.promotion.time.sleep", lambda _: None)
+
+    _replace_directory_with_retry(source, destination)
+
+    assert len(attempts) == 3
+    assert (destination / "fragment.txt").read_text(encoding="utf-8") == "ok"

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 import uuid
 
 from .change_set import (
@@ -21,6 +22,7 @@ DEFAULT_DELTA_ROOT = Path(
     "data/processed/normalized_deltas_v0_1"
 )
 PROMOTION_STATE_FILENAME = "state.json"
+DIRECTORY_REPLACE_ATTEMPTS = 5
 
 
 def _utc_now_iso():
@@ -60,6 +62,19 @@ def _atomic_write_json(path, payload):
     finally:
         if temp_path.exists():
             temp_path.unlink()
+
+
+def _replace_directory_with_retry(source, destination):
+    """Handle short-lived Windows directory locks during atomic promotion."""
+
+    for attempt in range(1, DIRECTORY_REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == DIRECTORY_REPLACE_ATTEMPTS:
+                raise
+            time.sleep(0.05 * attempt)
 
 
 def _manifest_hash(manifest):
@@ -259,7 +274,10 @@ def promote_normalized_fragments(
                 fragment_dir,
                 temp_destination,
             )
-            os.replace(temp_destination, destination)
+            _replace_directory_with_retry(
+                temp_destination,
+                destination,
+            )
         finally:
             if temp_destination.exists():
                 shutil.rmtree(temp_destination)
