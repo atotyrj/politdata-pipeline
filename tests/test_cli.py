@@ -83,6 +83,34 @@ def test_unified_run_cli_supports_read_only_full_plan(capsys):
     assert result["config"]["mode"] == "full-replace"
 
 
+def test_github_release_dry_run_needs_no_token(monkeypatch, capsys):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    assert main([
+        "run",
+        "--mode", "full-replace",
+        "--dry-run",
+        "--generation-store", "github-releases",
+        "--github-repository", "atotyrj/politdata-pipeline",
+        "--json",
+    ]) == 0
+
+    assert json.loads(capsys.readouterr().out)["status"] == "planned"
+
+
+def test_github_release_restore_requires_environment_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    with pytest.raises(SystemExit, match="GitHub token is required"):
+        main([
+            "restore",
+            "--latest",
+            "--destination", str(tmp_path / "restored"),
+            "--generation-store", "github-releases",
+            "--github-repository", "atotyrj/politdata-pipeline",
+        ])
+
+
 def test_unified_incremental_run_requires_explicit_limit():
     with pytest.raises(SystemExit, match="organization_limit"):
         main(["run", "--mode", "incremental", "--dry-run"])

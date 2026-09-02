@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import uuid
 
@@ -24,12 +25,47 @@ from .storage import LocalGenerationStore
 
 def _add_generation_store_arguments(parser):
     parser.add_argument(
+        "--generation-store",
+        choices=("local", "github-releases"),
+        default="local",
+        help=(
+            "Immutable generation backend (default: local). "
+            "github-releases reads credentials only from GITHUB_TOKEN."
+        ),
+    )
+    parser.add_argument(
+        "--github-repository",
+        help="GitHub repository in OWNER/REPO format; defaults to GITHUB_REPOSITORY.",
+    )
+    parser.add_argument(
+        "--github-target-commitish",
+        default="main",
+        help="Commit or branch used when GitHub creates a generation tag.",
+    )
+    parser.add_argument(
         "--generation-root", type=Path, default=DEFAULT_GENERATION_ROOT
     )
     parser.add_argument(
         "--latest-pointer",
         type=Path,
         default=DEFAULT_CONTROL_ROOT / "latest.json",
+    )
+
+
+def _generation_store(args):
+    if args.generation_store == "local":
+        return LocalGenerationStore(args.generation_root, args.latest_pointer)
+    repository = args.github_repository or os.environ.get("GITHUB_REPOSITORY")
+    if not repository:
+        raise ValueError(
+            "github-releases requires --github-repository OWNER/REPO "
+            "or GITHUB_REPOSITORY."
+        )
+    from .github_releases import GitHubReleaseGenerationStore
+
+    return GitHubReleaseGenerationStore(
+        repository,
+        target_commitish=args.github_target_commitish,
     )
 
 
@@ -171,6 +207,7 @@ def build_parser():
         help="Validate and print the plan without writes or network requests.",
     )
     run_parser.add_argument("--json", action="store_true")
+    _add_generation_store_arguments(run_parser)
 
     restore_parser = subparsers.add_parser(
         "restore",
@@ -275,6 +312,7 @@ def main(argv=None):
 
     if args.command == "run":
         try:
+            generation_store = None if args.dry_run else _generation_store(args)
             result = run_pipeline(
                 RunConfig(
                     mode=args.mode,
@@ -289,7 +327,9 @@ def main(argv=None):
                     confirm_full_replace=args.confirm_full_replace,
                     publish=args.publish,
                     dry_run=args.dry_run,
-                )
+                    generation_root=args.generation_root,
+                ),
+                generation_store=generation_store,
             )
         except (ValueError, RuntimeError) as error:
             raise SystemExit(str(error)) from error
@@ -297,8 +337,8 @@ def main(argv=None):
         return 0
 
     if args.command == "restore":
-        store = LocalGenerationStore(args.generation_root, args.latest_pointer)
         try:
+            store = _generation_store(args)
             if args.latest:
                 pointer = store.read_latest()
                 if pointer is None:
@@ -323,8 +363,8 @@ def main(argv=None):
         return 0
 
     if args.command in {"retention", "rollback", "catalog"}:
-        store = LocalGenerationStore(args.generation_root, args.latest_pointer)
         try:
+            store = _generation_store(args)
             if args.command == "retention":
                 plan = build_retention_plan(
                     store,

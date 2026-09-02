@@ -157,16 +157,21 @@ Environment із ручним approval.
 Git. Їх не слід додавати до історії репозиторію. Ephemeral filesystem GitHub
 runner-а також не може бути єдиним місцем збереження checkpoints.
 
-Рекомендована схема публікації:
+Поточна початкова схема публікації:
 
-- versioned object storage зберігає RAW, processed, checkpoints і manifests;
-- GitHub Releases на першому етапі може публікувати перевірені Excel та компактні
-  CSV/Parquet для користувачів;
-- `latest.json` дає стабільні посилання на актуальне покоління;
+- GitHub Releases зберігає immutable ZIP-частини RAW, processed, checkpoints і
+  manifests; кожне покоління спочатку створюється як draft;
+- перевірені Excel додатково публікуються як окремі release assets;
+- latest release та `generation_pointer.json` дають стабільний покажчик на
+  актуальне покоління;
 - GitHub Pages надалі може показувати каталог наборів, дати оновлення, checksums
   і посилання для завантаження;
 - GitHub Actions artifacts використовуються лише для діагностики запусків, а не
   як постійне канонічне сховище.
+
+Якщо реальні покоління перестануть вкладатися у практичні обмеження Releases,
+цей самий `GenerationStore` contract дозволить перенести внутрішні архіви в
+object storage, не змінюючи pipeline та окрему Excel-публікацію.
 
 Секрети доступу зберігаються у GitHub Secrets або, краще, замінюються короткими
 OIDC-обліковими даними. У логи не виводяться токени чи повні приватні payloads.
@@ -186,9 +191,11 @@ due-черга повторно планує успішні перевірки, 
 Єдиний full-replace runner уже підключено до CLI: він у відокремленому staging
 завантажує повний RAW, перебудовує manifests, normalization, references,
 enrichment, QA та Excel-пакет, а promotion виконується лише після успіху. Поки
-немає конкретного remote state/publish backend-а. Git remote налаштовано на
-приватний `atotyrj/politdata-pipeline`; базовий `.github/workflows/ci.yml`
-успішно запускає offline tests на чистому GitHub runner.
+remote state/publish backend реалізовано через GitHub Releases: покоління
+пакуються у checksum-verified ZIP-assets, Excel додаються окремо, а release
+стає latest лише після QA-gated publication. Git remote налаштовано на приватний
+`atotyrj/politdata-pipeline`; базовий `.github/workflows/ci.yml` успішно запускає
+offline tests на чистому GitHub runner.
 
 Канонічні Arrow-схеми всіх normalized datasets збережено як versioned package
 contract `normalized_v1.json`. Тому чистий runner може створити валідний
@@ -256,8 +263,11 @@ no-change run не переписує дані, повторний запуск 
 - [x] Додати атомарний rollback лише на повністю checksum-verified generation.
 - [x] Додати публічний каталог `processed/` і `outputs/`, який не розкриває RAW,
   interim або абсолютні локальні шляхи.
+- [x] Реалізувати GitHub Releases adapter: draft upload, checksum-verified
+  ZIP-частини повного state, окремі Excel-assets, latest, restore, rollback і
+  retention через спільний storage contract.
 - Узгодити остаточну кількість поколінь для production retention після вибору
-  remote backend-а; локальний безпечний default — три.
+  production policy; локальний безпечний default — три.
 
 Критерій готовності: нова машина може відновити state і виконати incremental,
 не маючи локальної історії попередніх запусків.
@@ -288,10 +298,11 @@ no-change run не переписує дані, повторний запуск 
 автоматичною публікацією поколінь потрібно буде:
 
 1. [x] створити GitHub-репозиторій, додати `origin` і перевірити перший CI run;
-2. обрати постійне сховище стану/даних (рекомендовано object storage; GitHub
-   Releases можна використати як початковий канал для Excel);
+2. [x] обрати початкове постійне сховище стану/даних — GitHub Releases; object
+   storage лишається запасним варіантом при перевищенні практичних лімітів;
 3. визначити бажаний розклад автоматичного incremental та retention;
-4. надати GitHub Environment/Secrets або OIDC-настройки для обраного сховища.
+4. для публікації у цьому самому репозиторії використати вбудований
+   `GITHUB_TOKEN`; окремий personal token не потрібен.
 
 Ці рішення не блокують завершення orchestrator-а, full-replace та локального
 incremental runner-а.

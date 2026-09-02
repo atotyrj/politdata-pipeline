@@ -93,6 +93,44 @@ guard, a complete RAW-to-output stage runner, QA-gated immutable generation
 promotion and an atomic `latest.json` pointer. It never publishes a partial
 rebuild.
 
+## GitHub Releases generation storage
+
+PolitData can use GitHub Releases as the first persistent generation backend,
+without committing RAW or generated workbooks to Git history. One immutable
+generation becomes one release. It is created as a draft, receives
+checksum-verified ZIP parts plus individually downloadable Excel workbooks, and
+is published as `latest` only after the pipeline QA gate passes.
+
+The token is read only from `GITHUB_TOKEN`; it is never accepted as a command
+line argument. On GitHub Actions the built-in job token can be used with
+`contents: write`, so no personal access token needs to be copied into the
+repository. For a local authenticated rehearsal, set the variable only in the
+current terminal and do not save it in project files.
+
+Publish a fully validated full-replace generation to Releases:
+
+```powershell
+politdata run --mode full-replace --confirm-full-replace --publish `
+  --generation-store github-releases `
+  --github-repository atotyrj/politdata-pipeline --json
+```
+
+Restore and verify the active generation on a clean machine:
+
+```powershell
+politdata restore --latest --destination data/restored/latest `
+  --generation-store github-releases `
+  --github-repository atotyrj/politdata-pipeline --json
+```
+
+RAW, interim, processed and output files remain inside restorable generation
+archives. Only `outputs/*.xlsx` are additionally exposed as direct release
+downloads and listed in `public_artifacts.json`. An individual source file that
+cannot fit safely below GitHub's per-asset limit aborts publication instead of
+being truncated. See
+[`docs/github_releases_storage.md`](docs/github_releases_storage.md) for the
+asset contract, rollback and operational safeguards.
+
 ## Generation maintenance
 
 Preview which immutable generations fall outside the default three-generation
@@ -146,7 +184,7 @@ an ambiguous stage marked `running`; reconcile that state before retrying.
 Do not replace `current.json` merely to test the command. Use a separate
 validation path for an isolated no-change control run. GitHub CI now runs the
 offline test suite after every push and pull request; scheduled ingestion and
-public artifact publication remain separate deployment steps.
+public artifact publication remain a later deployment step.
 
 The implementation roadmap for full replacement, manual incremental updates,
 scheduled GitHub updates, persistent state and public artifacts is documented in
