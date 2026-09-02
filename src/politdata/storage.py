@@ -33,6 +33,18 @@ class GenerationStore(Protocol):
 
     def read_latest(self) -> dict | None: ...
 
+    def generation_location(self, generation_id) -> str: ...
+
+    def list_generation_ids(self) -> list[str]: ...
+
+    def read_generation_manifest(
+        self, generation_id, *, expected_manifest_hash=None
+    ) -> dict: ...
+
+    def delete_generation(
+        self, generation_id, *, expected_manifest_hash=None
+    ) -> str: ...
+
     def restore_generation(
         self, generation_id, destination, *, expected_manifest_hash=None
     ) -> str: ...
@@ -59,7 +71,7 @@ def file_hash(path):
     return digest.hexdigest()
 
 
-def _atomic_json(path, payload):
+def atomic_json(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
@@ -124,6 +136,30 @@ class LocalGenerationStore:
             raise ValueError("Unsafe generation ID.")
         return self.generation_root / generation_id
 
+    def generation_location(self, generation_id):
+        return str(self._generation_path(generation_id))
+
+    def list_generation_ids(self):
+        if not self.generation_root.is_dir():
+            return []
+        return sorted(
+            candidate.name
+            for candidate in self.generation_root.iterdir()
+            if candidate.is_dir()
+            and GENERATION_ID_PATTERN.fullmatch(candidate.name)
+        )
+
+    def read_generation_manifest(
+        self, generation_id, *, expected_manifest_hash=None
+    ):
+        source = self._generation_path(generation_id)
+        if not source.is_dir():
+            raise FileNotFoundError(source)
+        return verify_generation(
+            source,
+            expected_manifest_hash=expected_manifest_hash,
+        )
+
     def publish_generation(self, source_dir, generation_id):
         source_dir = Path(source_dir)
         destination = self._generation_path(generation_id)
@@ -143,7 +179,7 @@ class LocalGenerationStore:
             raise LatestConflictError(
                 f"Latest generation changed: expected={expected_generation_id}, actual={current_id}"
             )
-        _atomic_json(self.latest_path, pointer)
+        atomic_json(self.latest_path, pointer)
         return self.latest_location
 
     def read_latest(self):
@@ -171,6 +207,33 @@ class LocalGenerationStore:
             if temporary.exists():
                 shutil.rmtree(temporary)
         return str(destination)
+
+    def delete_generation(
+        self, generation_id, *, expected_manifest_hash=None
+    ):
+        """Delete one verified non-current generation through a local tombstone."""
+
+        source = self._generation_path(generation_id)
+        current = self.read_latest()
+        current_id = current.get("generation_id") if current else None
+        if str(current_id) == str(generation_id):
+            raise LatestConflictError(
+                f"Refusing to delete latest generation: {generation_id}"
+            )
+        self.read_generation_manifest(
+            generation_id,
+            expected_manifest_hash=expected_manifest_hash,
+        )
+        trash_root = self.generation_root / ".retention-trash"
+        trash_root.mkdir(parents=True, exist_ok=True)
+        tombstone = trash_root / f"{generation_id}.{uuid.uuid4().hex[:8]}"
+        os.replace(source, tombstone)
+        try:
+            shutil.rmtree(tombstone)
+        finally:
+            if trash_root.exists() and not any(trash_root.iterdir()):
+                trash_root.rmdir()
+        return str(source)
 
     def restore_latest(self, destination):
         pointer = self.read_latest()

@@ -186,8 +186,9 @@ due-черга повторно планує успішні перевірки, 
 Єдиний full-replace runner уже підключено до CLI: він у відокремленому staging
 завантажує повний RAW, перебудовує manifests, normalization, references,
 enrichment, QA та Excel-пакет, а promotion виконується лише після успіху. Поки
-немає remote state/publish adapter-а та `.github/workflows`. Git remote для
-локального репозиторію ще не налаштований.
+немає конкретного remote state/publish backend-а. Git remote налаштовано на
+приватний `atotyrj/politdata-pipeline`; базовий `.github/workflows/ci.yml`
+успішно запускає offline tests на чистому GitHub runner.
 
 Канонічні Arrow-схеми всіх normalized datasets збережено як versioned package
 contract `normalized_v1.json`. Тому чистий runner може створити валідний
@@ -226,8 +227,8 @@ Materializer також атомарно приводить фрагменти �
   після повної трансформації без зміни активного покоління.
 - Додати повну QA-матрицю та перевірку узгодженості RAW/processed одного
   покоління.
-- [x] Реалізувати promotion без destructive in-place cleanup; додати операторську
-  команду rollback після підключення remote storage.
+- [x] Реалізувати promotion без destructive in-place cleanup та операторську
+  checksum-verified команду rollback з compare-and-swap захистом `latest`.
 
 Критерій готовності: штучний збій на будь-якій стадії не змінює активний набір.
 
@@ -250,14 +251,22 @@ no-change run не переписує дані, повторний запуск 
 - [x] Публікувати локальні immutable generations, checksums і `latest.json`.
 - [x] Додати checksum-verified `politdata restore` для конкретного або
   актуального покоління без залежності від локальної історії запусків.
-- Визначити retention, rollback та перелік публічних артефактів.
+- [x] Додати read-only retention preview, hash-bound apply з обов'язковим
+  expected-current guard та захистом активного покоління.
+- [x] Додати атомарний rollback лише на повністю checksum-verified generation.
+- [x] Додати публічний каталог `processed/` і `outputs/`, який не розкриває RAW,
+  interim або абсолютні локальні шляхи.
+- Узгодити остаточну кількість поколінь для production retention після вибору
+  remote backend-а; локальний безпечний default — три.
 
 Критерій готовності: нова машина може відновити state і виконати incremental,
 не маючи локальної історії попередніх запусків.
 
 ### Етап 5. GitHub Actions
 
-- PR workflow: lint/tests/fixtures без online ingestion.
+- [x] Push/PR workflow: інсталяція на чистому Python 3.11 runner та всі offline
+  tests без online ingestion; перший run успішний.
+- Додати lint/format checks після вибору відповідних інструментів.
 - Scheduled workflow: incremental з concurrency, cache, timeout і summary.
 - Manual full workflow: environment approval та обов'язковий dry-run/preflight.
 - Release/Page publication і повідомлення про помилки.
@@ -276,9 +285,9 @@ no-change run не переписує дані, повторний запуск 
 ## Рішення, для яких згодом потрібна участь власника
 
 Реалізацію локальних етапів можна продовжувати без додаткових пакетів. Перед
-публікацією у GitHub потрібно буде:
+автоматичною публікацією поколінь потрібно буде:
 
-1. створити або вказати GitHub-репозиторій і додати його URL як `origin`;
+1. [x] створити GitHub-репозиторій, додати `origin` і перевірити перший CI run;
 2. обрати постійне сховище стану/даних (рекомендовано object storage; GitHub
    Releases можна використати як початковий канал для Excel);
 3. визначити бажаний розклад автоматичного incremental та retention;

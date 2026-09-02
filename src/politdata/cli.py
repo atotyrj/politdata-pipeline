@@ -5,14 +5,40 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import uuid
 
 from .change_set import DEFAULT_CURRENT_CHANGE_SET_PATH, load_change_set
 from .ingestion_preflight import build_ingestion_preflight
 from .incremental_pipeline import run_incremental_downstream
 from .ingestion_runner import run_limited_organization_ingestion
-from .orchestrator import RunConfig, run_pipeline
+from .generation_maintenance import (
+    apply_retention_plan,
+    build_retention_plan,
+    rollback_latest,
+    write_public_artifact_catalog,
+)
+from .orchestrator import RunConfig, WriterLock, run_pipeline
 from .orchestrator import DEFAULT_CONTROL_ROOT, DEFAULT_GENERATION_ROOT
 from .storage import LocalGenerationStore
+
+
+def _add_generation_store_arguments(parser):
+    parser.add_argument(
+        "--generation-root", type=Path, default=DEFAULT_GENERATION_ROOT
+    )
+    parser.add_argument(
+        "--latest-pointer",
+        type=Path,
+        default=DEFAULT_CONTROL_ROOT / "latest.json",
+    )
+
+
+def _maintenance_lock(latest_pointer, mode):
+    return WriterLock(
+        Path(latest_pointer).parent / "writer.lock",
+        run_id=f"{mode}-{uuid.uuid4().hex[:12]}",
+        mode=mode,
+    )
 
 
 def change_set_summary(change_set):
@@ -156,15 +182,59 @@ def build_parser():
     )
     selection.add_argument("--generation-id")
     restore_parser.add_argument("--destination", type=Path, required=True)
-    restore_parser.add_argument(
-        "--generation-root", type=Path, default=DEFAULT_GENERATION_ROOT
-    )
-    restore_parser.add_argument(
-        "--latest-pointer",
-        type=Path,
-        default=DEFAULT_CONTROL_ROOT / "latest.json",
-    )
+    _add_generation_store_arguments(restore_parser)
     restore_parser.add_argument("--json", action="store_true")
+
+    retention_parser = subparsers.add_parser(
+        "retention",
+        help="Preview or explicitly apply immutable generation retention.",
+    )
+    retention_parser.add_argument("--keep-latest", type=int, default=3)
+    retention_parser.add_argument(
+        "--protect",
+        action="append",
+        default=[],
+        metavar="GENERATION_ID",
+        help="Additional generation ID to preserve; may be repeated.",
+    )
+    retention_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply the previewed plan. Omit for a read-only preview.",
+    )
+    retention_parser.add_argument(
+        "--expected-current",
+        help="Required with --apply; guards against a stale latest pointer.",
+    )
+    _add_generation_store_arguments(retention_parser)
+    retention_parser.add_argument("--json", action="store_true")
+
+    rollback_parser = subparsers.add_parser(
+        "rollback",
+        help="Atomically point latest at a verified earlier generation.",
+    )
+    rollback_parser.add_argument("--generation-id", required=True)
+    rollback_parser.add_argument("--expected-current", required=True)
+    _add_generation_store_arguments(rollback_parser)
+    rollback_parser.add_argument("--json", action="store_true")
+
+    catalog_parser = subparsers.add_parser(
+        "catalog",
+        help="Build a public catalog for verified analytical artifacts.",
+    )
+    catalog_parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_CONTROL_ROOT / "public_artifacts.json",
+    )
+    catalog_parser.add_argument(
+        "--include-prefix",
+        action="append",
+        dest="include_prefixes",
+        help="Public generation prefix; defaults to processed/ and outputs/.",
+    )
+    _add_generation_store_arguments(catalog_parser)
+    catalog_parser.add_argument("--json", action="store_true")
 
     return parser
 
@@ -250,6 +320,58 @@ def main(argv=None):
             },
             as_json=args.json,
         )
+        return 0
+
+    if args.command in {"retention", "rollback", "catalog"}:
+        store = LocalGenerationStore(args.generation_root, args.latest_pointer)
+        try:
+            if args.command == "retention":
+                plan = build_retention_plan(
+                    store,
+                    keep_latest=args.keep_latest,
+                    protected_generation_ids=args.protect,
+                )
+                if not args.apply:
+                    _print_result(plan, as_json=args.json)
+                    return 0
+                if not args.expected_current:
+                    raise ValueError(
+                        "retention --apply requires --expected-current."
+                    )
+                with _maintenance_lock(args.latest_pointer, "retention"):
+                    result = apply_retention_plan(
+                        store,
+                        plan,
+                        expected_current_generation_id=args.expected_current,
+                    )
+            elif args.command == "rollback":
+                with _maintenance_lock(args.latest_pointer, "rollback"):
+                    result = rollback_latest(
+                        store,
+                        args.generation_id,
+                        expected_current_generation_id=args.expected_current,
+                    )
+            else:
+                options = {}
+                if args.include_prefixes:
+                    options["include_prefixes"] = args.include_prefixes
+                with _maintenance_lock(args.latest_pointer, "catalog"):
+                    catalog = write_public_artifact_catalog(
+                        store,
+                        args.output,
+                        **options,
+                    )
+                result = {
+                    "status": "written",
+                    "path": str(args.output),
+                    "latest_generation_id": catalog[
+                        "latest_generation_id"
+                    ],
+                    "generation_count": len(catalog["generations"]),
+                }
+        except (OSError, ValueError, RuntimeError) as error:
+            raise SystemExit(str(error)) from error
+        _print_result(result, as_json=args.json)
         return 0
 
     path = args.change_set

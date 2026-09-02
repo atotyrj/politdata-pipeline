@@ -1,4 +1,5 @@
 import json
+from contextlib import nullcontext
 
 import pytest
 
@@ -126,3 +127,119 @@ def test_restore_latest_cli_delegates_to_checksum_verifying_store(
 def test_restore_cli_requires_explicit_generation_selection(tmp_path):
     with pytest.raises(SystemExit):
         main(["restore", "--destination", str(tmp_path / "target")])
+
+
+def test_retention_cli_is_read_only_preview_by_default(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "politdata.cli.LocalGenerationStore",
+        lambda *_: object(),
+    )
+    monkeypatch.setattr(
+        "politdata.cli.build_retention_plan",
+        lambda store, **kwargs: {
+            "status": "planned",
+            "current_generation_id": "g3",
+            "keep_latest": kwargs["keep_latest"],
+            "delete": [{"generation_id": "g1"}],
+        },
+    )
+    monkeypatch.setattr(
+        "politdata.cli.apply_retention_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("preview must not delete")
+        ),
+    )
+
+    assert main([
+        "retention",
+        "--keep-latest", "2",
+        "--generation-root", str(tmp_path / "generations"),
+        "--latest-pointer", str(tmp_path / "latest.json"),
+        "--json",
+    ]) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "planned"
+    assert result["keep_latest"] == 2
+
+
+def test_retention_apply_requires_expected_current(tmp_path):
+    with pytest.raises(SystemExit, match="requires --expected-current"):
+        main([
+            "retention",
+            "--apply",
+            "--generation-root", str(tmp_path / "generations"),
+            "--latest-pointer", str(tmp_path / "latest.json"),
+        ])
+
+
+def test_rollback_cli_uses_explicit_compare_and_swap_guard(
+    tmp_path, monkeypatch, capsys
+):
+    calls = []
+    monkeypatch.setattr(
+        "politdata.cli.LocalGenerationStore",
+        lambda *_: object(),
+    )
+    monkeypatch.setattr(
+        "politdata.cli._maintenance_lock",
+        lambda *_: nullcontext(),
+    )
+
+    def rollback(store, generation_id, *, expected_current_generation_id):
+        calls.append((generation_id, expected_current_generation_id))
+        return {
+            "status": "rolled_back",
+            "previous_generation_id": expected_current_generation_id,
+            "generation_id": generation_id,
+        }
+
+    monkeypatch.setattr("politdata.cli.rollback_latest", rollback)
+
+    assert main([
+        "rollback",
+        "--generation-id", "g1",
+        "--expected-current", "g2",
+        "--generation-root", str(tmp_path / "generations"),
+        "--latest-pointer", str(tmp_path / "latest.json"),
+        "--json",
+    ]) == 0
+
+    assert calls == [("g1", "g2")]
+    assert json.loads(capsys.readouterr().out)["status"] == "rolled_back"
+
+
+def test_catalog_cli_writes_operator_summary(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "politdata.cli.LocalGenerationStore",
+        lambda *_: object(),
+    )
+    monkeypatch.setattr(
+        "politdata.cli._maintenance_lock",
+        lambda *_: nullcontext(),
+    )
+    monkeypatch.setattr(
+        "politdata.cli.write_public_artifact_catalog",
+        lambda store, path, **kwargs: {
+            "latest_generation_id": "g2",
+            "generations": [{"generation_id": "g2"}],
+        },
+    )
+    output = tmp_path / "catalog.json"
+
+    assert main([
+        "catalog",
+        "--output", str(output),
+        "--generation-root", str(tmp_path / "generations"),
+        "--latest-pointer", str(tmp_path / "latest.json"),
+        "--json",
+    ]) == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "written",
+        "path": str(output),
+        "latest_generation_id": "g2",
+        "generation_count": 1,
+    }

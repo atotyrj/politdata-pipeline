@@ -1,5 +1,7 @@
 # PolitData Pipeline
 
+[![CI](https://github.com/atotyrj/politdata-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/atotyrj/politdata-pipeline/actions/workflows/ci.yml)
+
 Local development project for downloading, cleaning, enriching, transforming, validating and analyzing data from the NACP PolitData registry.
 
 ## Structure
@@ -86,11 +88,44 @@ Inspect a full-replace plan without network requests or writes:
 politdata run --mode full-replace --dry-run --json
 ```
 
-The full-replace lifecycle already provides isolated staging, an explicit
-confirmation guard, QA-gated immutable generation promotion and an atomic
-`latest.json` pointer. The command intentionally refuses an actual full run
-until the complete RAW-to-output stage runner is connected; it must never
-publish a partial rebuild.
+The full-replace lifecycle provides isolated staging, an explicit confirmation
+guard, a complete RAW-to-output stage runner, QA-gated immutable generation
+promotion and an atomic `latest.json` pointer. It never publishes a partial
+rebuild.
+
+## Generation maintenance
+
+Preview which immutable generations fall outside the default three-generation
+retention window. Preview is read-only:
+
+```powershell
+politdata retention --keep-latest 3 --json
+```
+
+Applying that exact policy requires the current generation ID shown by the
+preview. This compare-and-swap guard prevents a stale cleanup from deleting a
+generation after another run has changed `latest.json`:
+
+```powershell
+politdata retention --keep-latest 3 --expected-current GENERATION_ID --apply --json
+```
+
+Rollback never edits data in place. It checksum-verifies the selected immutable
+generation and then atomically changes only `latest.json`:
+
+```powershell
+politdata rollback --generation-id TARGET_ID --expected-current CURRENT_ID --json
+```
+
+Build the public artifact catalog for all retained generations:
+
+```powershell
+politdata catalog --json
+```
+
+The default catalog includes only `processed/` analytical datasets and
+`outputs/` workbooks. It excludes RAW, interim state and absolute local paths.
+No retention or rollback command performs online ingestion.
 
 After a committed ingestion run has created a change set, inspect it first:
 
@@ -109,9 +144,9 @@ partially completed change set it resumes pending or failed stages, but refuses
 an ambiguous stage marked `running`; reconcile that state before retrying.
 
 Do not replace `current.json` merely to test the command. Use a separate
-validation path for an isolated no-change control run. GitHub scheduling and
-public publication remain a later deployment step, after online ingestion is
-put behind an explicit, reviewed command.
+validation path for an isolated no-change control run. GitHub CI now runs the
+offline test suite after every push and pull request; scheduled ingestion and
+public artifact publication remain separate deployment steps.
 
 The implementation roadmap for full replacement, manual incremental updates,
 scheduled GitHub updates, persistent state and public artifacts is documented in
