@@ -225,6 +225,8 @@ def validate_expected_counts(
 
 def collect_enriched_row_counts(
     output_root,
+    *,
+    enforce_regression_baseline=True,
 ) -> pd.DataFrame:
 
     output_root = Path(
@@ -362,16 +364,15 @@ def collect_enriched_row_counts(
     }
 
 
-    validate_expected_counts(
-        payment_actual,
-        PAYMENT_EXPECTED_ROWS,
-    )
-
-
-    validate_expected_counts(
-        section_actual,
-        REPORT_SECTION_EXPECTED_ROWS,
-    )
+    if enforce_regression_baseline:
+        validate_expected_counts(
+            payment_actual,
+            PAYMENT_EXPECTED_ROWS,
+        )
+        validate_expected_counts(
+            section_actual,
+            REPORT_SECTION_EXPECTED_ROWS,
+        )
 
 
     result[
@@ -615,6 +616,7 @@ def validate_enriched_output(
     output_root,
     *,
     organization_reference,
+    enforce_regression_baseline=True,
 ):
     """
     Top-level QA for the currently consolidated
@@ -628,7 +630,8 @@ def validate_enriched_output(
 
     counts = (
         collect_enriched_row_counts(
-            output_root
+            output_root,
+            enforce_regression_baseline=enforce_regression_baseline,
         )
     )
 
@@ -644,12 +647,11 @@ def validate_enriched_output(
     )
 
 
-    party_income_benchmark = (
-        validate_party_income_benchmark(
-            output_root
-            / "payments"
+    party_income_benchmark = None
+    if enforce_regression_baseline:
+        party_income_benchmark = validate_party_income_benchmark(
+            output_root / "payments"
         )
-    )
 
 
     return {

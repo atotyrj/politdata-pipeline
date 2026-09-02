@@ -27,3 +27,38 @@ def test_manifest_update_replaces_only_affected_org_and_preserves_override(tmp_p
     assert set(pd.read_parquet(paths[0])["report_id"]) == {"new", "alternate", "keep"}
     analysis = pd.read_parquet(paths[2])
     assert analysis.loc[analysis.organization_id == "o1", "analysis_selected_report_id"].item() == "alternate"
+
+
+def test_manifest_update_does_not_rewrite_semantically_unchanged_files(tmp_path):
+    paths = [
+        tmp_path / name
+        for name in ("all.parquet", "selected.parquet", "analysis.parquet")
+    ]
+    old = pd.DataFrame(
+        [
+            {
+                "report_id": "r1",
+                "organization_id": "o1",
+                "year": 2025,
+                "quarter": 1,
+                "signed_date": "2025-01-01",
+                "discovered_at_utc": "2026-01-01T00:00:00+00:00",
+            }
+        ]
+    )
+    for path in paths:
+        old.to_parquet(path, index=False)
+    before = {path: path.read_bytes() for path in paths}
+    refreshed = old.copy()
+    refreshed["discovered_at_utc"] = "2026-01-10T00:00:00+00:00"
+
+    result = update_report_manifests(
+        refreshed,
+        affected_organization_ids=["o1"],
+        all_reports_path=paths[0],
+        selected_reports_path=paths[1],
+        analysis_reports_path=paths[2],
+    )
+
+    assert result["status"] == "no_changes"
+    assert {path: path.read_bytes() for path in paths} == before

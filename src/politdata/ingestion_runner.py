@@ -5,7 +5,11 @@ from __future__ import annotations
 from .change_set import DEFAULT_CURRENT_CHANGE_SET_PATH
 from .incremental_pipeline import run_incremental_downstream
 from .report_details import run_report_detail_batch
-from .report_discovery import build_report_manifest_from_snapshots, run_report_discovery_batch
+from .report_discovery import (
+    DEFAULT_REFRESH_INTERVAL_DAYS,
+    build_report_manifest_from_snapshots,
+    run_report_discovery_batch,
+)
 from .report_manifest_update import update_report_manifests
 from .sync import run_organization_sync
 import pandas as pd
@@ -22,13 +26,15 @@ def run_limited_organization_ingestion(
     change_set_path=DEFAULT_CURRENT_CHANGE_SET_PATH,
     run_downstream=True,
     report_limit=None,
+    report_discovery_limit=None,
+    report_refresh_interval_days=DEFAULT_REFRESH_INTERVAL_DAYS,
     sync_options=None,
 ):
-    """Fetch at most ``organization_limit`` candidate cards, then process changes.
+    """Run bounded organization, report-list, and report-detail ingestion.
 
-    This is an online operation. It is deliberately limited to organization
-    cards: report-list refresh and report-selection policy are not silently
-    inferred here, so newly published report instances cannot be missed.
+    Report-list discovery uses its own persisted due queue across the complete
+    organization manifest. It is intentionally independent from organization
+    card changes, so a new report from an unchanged party is still discoverable.
     """
 
     organization_limit = int(organization_limit)
@@ -52,41 +58,69 @@ def run_limited_organization_ingestion(
         "sync": sync,
         "change_set_path": str(change_set_path),
     }
-    if report_limit is not None:
-        report_limit = int(report_limit)
-        if report_limit <= 0:
-            raise ValueError("report_limit must be positive.")
-        changed_ids = [
-            str(item["organization_id"])
-            for item in sync.get("results", [])
-            if item.get("status") in {"new", "meaningful_change"}
-        ]
-        if not changed_ids:
-            result["reports"] = {"status": "no_changed_organizations"}
-            if run_downstream:
-                result["downstream"] = run_incremental_downstream(
-                    change_set_path=change_set_path
-                )
-            else:
-                result["downstream"] = {"status": "not_requested"}
-            return result
-        manifest = pd.read_parquet(options.get("committed_manifest_path", "data/interim/manifests/organization_manifest_committed.parquet"))
+    reports_requested = (
+        report_limit is not None or report_discovery_limit is not None
+    )
+    if reports_requested:
+        if report_discovery_limit is None:
+            report_discovery_limit = organization_limit
+        report_discovery_limit = int(report_discovery_limit)
+        if report_discovery_limit <= 0:
+            raise ValueError("report_discovery_limit must be positive.")
+        if report_limit is not None:
+            report_limit = int(report_limit)
+            if report_limit <= 0:
+                raise ValueError("report_limit must be positive.")
+
+        manifest = pd.read_parquet(
+            options.get(
+                "committed_manifest_path",
+                "data/interim/manifests/organization_manifest_committed.parquet",
+            )
+        )
         discovery_summary, _ = run_report_discovery_batch(
-            manifest, organization_ids=changed_ids, limit=organization_limit
+            manifest,
+            limit=report_discovery_limit,
+            refresh_interval_days=report_refresh_interval_days,
         )
-        refreshed, _ = build_report_manifest_from_snapshots(manifest)
-        update = update_report_manifests(
-            refreshed, affected_organization_ids=changed_ids,
-            all_reports_path=DEFAULT_ALL_REPORTS_PATH,
-            selected_reports_path=DEFAULT_SELECTED_REPORTS_PATH,
-            analysis_reports_path=DEFAULT_ANALYSIS_REPORTS_PATH,
-        )
-        selected = pd.read_parquet(DEFAULT_SELECTED_REPORTS_PATH)
-        candidates = selected[selected["organization_id"].astype(str).isin(changed_ids)]
-        details_summary, _ = run_report_detail_batch(
-            candidates, limit=report_limit, change_set_path=change_set_path
-        )
-        result["reports"] = {"discovery": discovery_summary, "manifest": update, "details": details_summary}
+        refreshed_ids = discovery_summary[
+            "successful_organization_ids"
+        ]
+        if refreshed_ids:
+            refreshed, discovery_qa = build_report_manifest_from_snapshots(
+                manifest,
+                organization_ids=refreshed_ids,
+            )
+            update = update_report_manifests(
+                refreshed,
+                affected_organization_ids=refreshed_ids,
+                all_reports_path=DEFAULT_ALL_REPORTS_PATH,
+                selected_reports_path=DEFAULT_SELECTED_REPORTS_PATH,
+                analysis_reports_path=DEFAULT_ANALYSIS_REPORTS_PATH,
+            )
+        else:
+            discovery_qa = {"status": "no_successful_refreshes"}
+            update = {
+                "status": "no_due_or_successful_organizations",
+                "invalid_overrides": [],
+            }
+
+        if report_limit is not None:
+            selected = pd.read_parquet(DEFAULT_SELECTED_REPORTS_PATH)
+            details_summary, _ = run_report_detail_batch(
+                selected,
+                limit=report_limit,
+                change_set_path=change_set_path,
+            )
+        else:
+            details_summary = {"status": "not_requested"}
+
+        result["reports"] = {
+            "discovery": discovery_summary,
+            "discovery_qa": discovery_qa,
+            "manifest": update,
+            "details": details_summary,
+        }
     else:
         result["reports"] = {"status": "not_requested"}
     if run_downstream:

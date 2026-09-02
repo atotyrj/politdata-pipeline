@@ -11,6 +11,7 @@ dependencies = [
     "pandas>=2.3",
     "pyarrow>=22",
     "tqdm>=4.67",
+    "xlsxwriter>=3.2",
 ]
 
 [project.scripts]
@@ -21,3 +22,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+politdata = ["schemas/*.json"]

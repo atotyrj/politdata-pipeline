@@ -106,7 +106,7 @@ def _write_dynamic_fragment(path, rows):
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(
-        path.stem + ".tmp." + uuid.uuid4().hex + path.suffix
+        ".t." + uuid.uuid4().hex[:8] + path.suffix
     )
 
     try:
@@ -125,7 +125,7 @@ def _write_dynamic_fragment(path, rows):
 def _write_schema_fragment(path, rows, schema):
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(
-        path.stem + ".tmp." + uuid.uuid4().hex + path.suffix
+        ".t." + uuid.uuid4().hex[:8] + path.suffix
     )
 
     try:
@@ -405,9 +405,7 @@ def normalize_changed_fragments(
         "running",
     )
     save_change_set(change_set, change_set_path)
-    temp_root = fragment_root / (
-        ".tmp." + run_id + "." + uuid.uuid4().hex
-    )
+    temp_root = fragment_root / (".t." + uuid.uuid4().hex[:8])
 
     try:
         organization_summaries = [

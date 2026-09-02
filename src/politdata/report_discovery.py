@@ -1,5 +1,5 @@
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
 import os
@@ -24,6 +24,171 @@ DEFAULT_STATE_PATH = Path(
 DEFAULT_SNAPSHOT_DIR = Path(
     "data/raw/report_lists"
 )
+
+DEFAULT_REFRESH_INTERVAL_DAYS = 7
+DEFAULT_ERROR_RETRY_BASE_HOURS = 6
+DEFAULT_ERROR_RETRY_MAX_HOURS = 72
+
+
+def _utc_timestamp(value):
+    """Parse one optional timestamp as timezone-aware UTC."""
+
+    if value is None or pd.isna(value):
+        return None
+    parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed
+
+
+def _next_success_check(last_success, refresh_interval_days):
+    parsed = _utc_timestamp(last_success)
+    if parsed is None:
+        return None
+    return (parsed + pd.Timedelta(days=refresh_interval_days)).isoformat()
+
+
+def _migrate_discovery_state(state, *, refresh_interval_days):
+    """Upgrade legacy discovery checkpoints without losing their progress."""
+
+    state = state.copy()
+    defaults = {
+        "status": "pending",
+        "last_checked_at_utc": None,
+        "last_success_at_utc": None,
+        "next_check_at_utc": None,
+        "attempts": 0,
+        "consecutive_errors": 0,
+        "declared_count": None,
+        "fetched_count": None,
+        "count_difference": None,
+        "count_mismatch": None,
+        "snapshot_path": None,
+        "error": None,
+    }
+    for column, default in defaults.items():
+        if column not in state.columns:
+            state[column] = default
+
+    success = state["status"].eq("success")
+    missing_success = state["last_success_at_utc"].isna() & success
+    state.loc[missing_success, "last_success_at_utc"] = state.loc[
+        missing_success, "last_checked_at_utc"
+    ]
+
+    missing_next = state["next_check_at_utc"].isna() & success
+    state.loc[missing_next, "next_check_at_utc"] = state.loc[
+        missing_next, "last_success_at_utc"
+    ].map(lambda value: _next_success_check(value, refresh_interval_days))
+
+    state["attempts"] = (
+        pd.to_numeric(state["attempts"], errors="coerce").fillna(0).astype("int64")
+    )
+    state["consecutive_errors"] = (
+        pd.to_numeric(state["consecutive_errors"], errors="coerce")
+        .fillna(0)
+        .astype("int64")
+    )
+    return state
+
+
+def select_report_discovery_candidates(
+    state,
+    *,
+    organization_ids=None,
+    entity_type=None,
+    limit=None,
+    retry_errors=True,
+    now=None,
+):
+    """Select pending, retryable, or scheduled report-list refreshes.
+
+    The ordering is deterministic: never-checked rows first, then retryable
+    errors, then successful rows whose persisted ``next_check_at_utc`` is due.
+    Within each class the oldest due/check time wins.
+    """
+
+    candidates = state.copy()
+    if organization_ids is not None:
+        ids = {str(value) for value in organization_ids}
+        candidates = candidates[
+            candidates["organization_id"].astype(str).isin(ids)
+        ]
+    if entity_type is not None:
+        candidates = candidates[candidates["entity_type"] == entity_type]
+
+    current = _utc_timestamp(now)
+    if current is None:
+        current = pd.Timestamp.now(tz="UTC")
+    status = candidates["status"].fillna("pending")
+    next_check = pd.to_datetime(
+        candidates["next_check_at_utc"], utc=True, errors="coerce"
+    )
+    scheduled_due = next_check.isna() | next_check.le(current)
+    due = status.eq("pending") | status.eq("success") & scheduled_due
+    if retry_errors:
+        due = due | status.eq("error") & scheduled_due
+
+    candidates = candidates.loc[due].copy()
+    due_total = len(candidates)
+    candidates["_priority"] = (
+        candidates["status"].map({"pending": 0, "error": 1, "success": 2}).fillna(3)
+    )
+    candidates["_due_sort"] = pd.to_datetime(
+        candidates["next_check_at_utc"], utc=True, errors="coerce"
+    ).fillna(pd.Timestamp("1900-01-01", tz="UTC"))
+    candidates["_checked_sort"] = pd.to_datetime(
+        candidates["last_checked_at_utc"], utc=True, errors="coerce"
+    ).fillna(pd.Timestamp("1900-01-01", tz="UTC"))
+    candidates = candidates.sort_values(
+        ["_priority", "_due_sort", "_checked_sort", "organization_id"],
+        kind="stable",
+    ).drop(columns=["_priority", "_due_sort", "_checked_sort"])
+
+    if limit is not None:
+        limit = int(limit)
+        if limit <= 0:
+            raise ValueError("limit must be positive.")
+        candidates = candidates.head(limit)
+    return candidates, due_total
+
+
+def report_discovery_queue_summary(
+    state,
+    *,
+    refresh_interval_days=DEFAULT_REFRESH_INTERVAL_DAYS,
+    now=None,
+):
+    """Return a compact, read-only summary of the persisted due queue."""
+
+    state = _migrate_discovery_state(
+        state,
+        refresh_interval_days=refresh_interval_days,
+    )
+    candidates, due_total = select_report_discovery_candidates(
+        state,
+        now=now,
+    )
+    current = _utc_timestamp(now)
+    if current is None:
+        current = pd.Timestamp.now(tz="UTC")
+    next_checks = pd.to_datetime(
+        state["next_check_at_utc"], utc=True, errors="coerce"
+    )
+    future = next_checks[next_checks.gt(current)]
+    return {
+        "organizations": len(state),
+        "due_now": due_total,
+        "pending": int(state["status"].fillna("pending").eq("pending").sum()),
+        "errors": int(state["status"].eq("error").sum()),
+        "successful": int(state["status"].eq("success").sum()),
+        "next_scheduled_at_utc": (
+            future.min().isoformat() if not future.empty else None
+        ),
+        "first_due_organization_ids": candidates[
+            "organization_id"
+        ].head(10).astype(str).tolist(),
+    }
 
 
 def _write_json_atomic(path, data):
@@ -182,6 +347,7 @@ def _try_save_state(
 def initialize_report_discovery_state(
     organization_manifest,
     state_path=DEFAULT_STATE_PATH,
+    refresh_interval_days=DEFAULT_REFRESH_INTERVAL_DAYS,
 ):
     """
     Initialize or update discovery state while
@@ -326,12 +492,19 @@ def initialize_report_discovery_state(
             "error"
         ] = None
 
-    return state
+    refresh_interval_days = float(refresh_interval_days)
+    if refresh_interval_days < 0:
+        raise ValueError("refresh_interval_days must be non-negative.")
+    return _migrate_discovery_state(
+        state,
+        refresh_interval_days=refresh_interval_days,
+    )
 
 
 def reconcile_state_from_snapshots(
     state,
     snapshot_dir=DEFAULT_SNAPSHOT_DIR,
+    refresh_interval_days=DEFAULT_REFRESH_INTERVAL_DAYS,
 ):
     """
     Recover successful state from RAW snapshots.
@@ -409,6 +582,27 @@ def reconcile_state_from_snapshots(
             ):
                 continue
 
+            snapshot_retrieved_at = snapshot.get(
+                "retrieved_at_utc"
+            )
+            snapshot_timestamp = _utc_timestamp(
+                snapshot_retrieved_at
+            )
+            last_checked_timestamp = _utc_timestamp(
+                state.at[
+                    organization_id,
+                    "last_checked_at_utc",
+                ]
+            )
+            if (
+                snapshot_timestamp is None
+                or (
+                    last_checked_timestamp is not None
+                    and snapshot_timestamp <= last_checked_timestamp
+                )
+            ):
+                continue
+
             state.at[
                 organization_id,
                 "status",
@@ -417,9 +611,25 @@ def reconcile_state_from_snapshots(
             state.at[
                 organization_id,
                 "last_checked_at_utc",
-            ] = snapshot.get(
-                "retrieved_at_utc"
+            ] = snapshot_retrieved_at
+
+            state.at[
+                organization_id,
+                "last_success_at_utc",
+            ] = snapshot_retrieved_at
+
+            state.at[
+                organization_id,
+                "next_check_at_utc",
+            ] = _next_success_check(
+                snapshot_retrieved_at,
+                refresh_interval_days,
             )
+
+            state.at[
+                organization_id,
+                "consecutive_errors",
+            ] = 0
 
             state.at[
                 organization_id,
@@ -486,6 +696,10 @@ def run_report_discovery_batch(
     max_retries=4,
     retry_errors=True,
     checkpoint_every=25,
+    refresh_interval_days=DEFAULT_REFRESH_INTERVAL_DAYS,
+    error_retry_base_hours=DEFAULT_ERROR_RETRY_BASE_HOURS,
+    error_retry_max_hours=DEFAULT_ERROR_RETRY_MAX_HOURS,
+    now=None,
 ):
     """
     Resumable report-list discovery.
@@ -501,6 +715,14 @@ def run_report_discovery_batch(
         snapshot_dir
     )
 
+    refresh_interval_days = float(refresh_interval_days)
+    error_retry_base_hours = float(error_retry_base_hours)
+    error_retry_max_hours = float(error_retry_max_hours)
+    if refresh_interval_days < 0:
+        raise ValueError("refresh_interval_days must be non-negative.")
+    if error_retry_base_hours <= 0 or error_retry_max_hours <= 0:
+        raise ValueError("error retry intervals must be positive.")
+
     snapshot_dir.mkdir(
         parents=True,
         exist_ok=True,
@@ -510,6 +732,7 @@ def run_report_discovery_batch(
         initialize_report_discovery_state(
             organization_manifest,
             state_path=state_path,
+            refresh_interval_days=refresh_interval_days,
         )
     )
 
@@ -521,6 +744,7 @@ def run_report_discovery_batch(
     ) = reconcile_state_from_snapshots(
         state,
         snapshot_dir=snapshot_dir,
+        refresh_interval_days=refresh_interval_days,
     )
 
     if recovered_from_snapshots:
@@ -537,54 +761,14 @@ def run_report_discovery_batch(
         state_path,
     )
 
-    candidates = state.copy()
-
-    if organization_ids is not None:
-
-        organization_ids = set(
-            organization_ids
-        )
-
-        candidates = candidates[
-            candidates[
-                "organization_id"
-            ].isin(
-                organization_ids
-            )
-        ]
-
-    if entity_type is not None:
-
-        candidates = candidates[
-            candidates[
-                "entity_type"
-            ]
-            == entity_type
-        ]
-
-    candidates = candidates[
-        candidates[
-            "status"
-        ]
-        != "success"
-    ]
-
-    if not retry_errors:
-
-        candidates = candidates[
-            candidates[
-                "status"
-            ]
-            != "error"
-        ]
-
-    if limit is not None:
-
-        candidates = (
-            candidates.head(
-                limit
-            )
-        )
+    candidates, due_before_limit = select_report_discovery_candidates(
+        state,
+        organization_ids=organization_ids,
+        entity_type=entity_type,
+        limit=limit,
+        retry_errors=retry_errors,
+        now=now,
+    )
 
     selected_ids = (
         candidates[
@@ -600,15 +784,30 @@ def run_report_discovery_batch(
     failed = 0
     reports_fetched = 0
     attempts_since_checkpoint = 0
+    successful_ids = []
+    failed_ids = []
 
     for organization_id in tqdm(
         selected_ids,
         desc="Report discovery",
     ):
 
-        retrieved_at = datetime.now(
-            timezone.utc
+        selected_now = _utc_timestamp(now)
+        retrieved_at = (
+            selected_now.to_pydatetime()
+            if selected_now is not None
+            else datetime.now(timezone.utc)
         )
+
+        state.at[
+            organization_id,
+            "attempts",
+        ] = int(
+            state.at[
+                organization_id,
+                "attempts",
+            ]
+        ) + 1
 
         try:
 
@@ -669,6 +868,24 @@ def run_report_discovery_batch(
 
             state.at[
                 organization_id,
+                "last_success_at_utc",
+            ] = retrieved_at.isoformat()
+
+            state.at[
+                organization_id,
+                "next_check_at_utc",
+            ] = (
+                retrieved_at
+                + timedelta(days=refresh_interval_days)
+            ).isoformat()
+
+            state.at[
+                organization_id,
+                "consecutive_errors",
+            ] = 0
+
+            state.at[
+                organization_id,
                 "declared_count",
             ] = metadata[
                 "declared_count"
@@ -708,6 +925,7 @@ def run_report_discovery_batch(
             ] = None
 
             successful += 1
+            successful_ids.append(organization_id)
 
             reports_fetched += len(
                 reports
@@ -732,7 +950,31 @@ def run_report_discovery_batch(
                 exc
             )
 
+            consecutive_errors = int(
+                state.at[
+                    organization_id,
+                    "consecutive_errors",
+                ]
+            ) + 1
+            state.at[
+                organization_id,
+                "consecutive_errors",
+            ] = consecutive_errors
+            retry_hours = min(
+                error_retry_base_hours
+                * (2 ** min(consecutive_errors - 1, 20)),
+                error_retry_max_hours,
+            )
+            state.at[
+                organization_id,
+                "next_check_at_utc",
+            ] = (
+                retrieved_at
+                + timedelta(hours=retry_hours)
+            ).isoformat()
+
             failed += 1
+            failed_ids.append(organization_id)
 
         attempts_since_checkpoint += 1
 
@@ -765,14 +1007,26 @@ def run_report_discovery_batch(
     )
 
     summary = {
+        "due_before_limit":
+            due_before_limit,
+
         "selected":
             len(selected_ids),
+
+        "selected_organization_ids":
+            selected_ids,
 
         "successful":
             successful,
 
+        "successful_organization_ids":
+            successful_ids,
+
         "failed":
             failed,
+
+        "failed_organization_ids":
+            failed_ids,
 
         "reports_fetched":
             reports_fetched,
@@ -820,10 +1074,13 @@ def run_report_discovery_batch(
 def build_report_manifest_from_snapshots(
     organization_manifest,
     snapshot_dir=DEFAULT_SNAPSHOT_DIR,
+    organization_ids=None,
 ):
     """
-    Rebuild unified report manifest from saved
-    per-organization RAW report-list snapshots.
+    Build a report manifest from saved per-organization RAW snapshots.
+
+    When ``organization_ids`` is provided, only those exact snapshot paths are
+    read. Incremental runs therefore do not scan every historical RAW file.
     """
 
     snapshot_dir = Path(
@@ -839,12 +1096,21 @@ def build_report_manifest_from_snapshots(
 
     frames = []
     missing_organizations = []
+    missing_snapshots = []
 
-    for snapshot_path in sorted(
-        snapshot_dir.glob(
-            "*.json"
-        )
-    ):
+    if organization_ids is None:
+        snapshot_paths = sorted(snapshot_dir.glob("*.json"))
+    else:
+        requested_ids = sorted({str(value) for value in organization_ids})
+        snapshot_paths = []
+        for organization_id in requested_ids:
+            snapshot_path = snapshot_dir / f"{organization_id}.json"
+            if snapshot_path.exists():
+                snapshot_paths.append(snapshot_path)
+            else:
+                missing_snapshots.append(organization_id)
+
+    for snapshot_path in snapshot_paths:
 
         with snapshot_path.open(
             "r",
@@ -967,6 +1233,9 @@ def build_report_manifest_from_snapshots(
             len(
                 missing_organizations
             ),
+
+        "requested_snapshots_missing":
+            len(missing_snapshots),
     }
 
     return (

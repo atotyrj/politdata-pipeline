@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import shutil
 
 from pathlib import Path
 
@@ -24,6 +25,7 @@ def rebuild_enriched_data_layers(
     *,
     reference_root,
     overwrite: bool = False,
+    enforce_regression_baseline: bool = True,
 ):
     """
     Rebuild the currently productionized enrichment layers
@@ -154,6 +156,9 @@ def rebuild_enriched_data_layers(
 
         organization_reference=
             organization_reference_path,
+
+        enforce_regression_baseline=
+            enforce_regression_baseline,
     )
 
 
@@ -180,6 +185,7 @@ def rebuild_processed_analytics(
     output_root,
     *,
     overwrite: bool = False,
+    enforce_regression_baseline: bool = True,
 ):
     """
     Rebuild the currently productionized analytical layers
@@ -326,8 +332,22 @@ def rebuild_processed_analytics(
 
             overwrite=
                 overwrite,
+
+            enforce_regression_baseline=
+                enforce_regression_baseline,
         )
     )
+
+    # property_moneys is already normalized and is also a public analytical
+    # section.  References consume it directly, while the Excel exporter reads
+    # every publishable section from the processed generation.
+    published_property_moneys = (
+        output_root / "properties" / "property_moneys.parquet"
+    )
+    published_property_moneys.parent.mkdir(parents=True, exist_ok=True)
+    if published_property_moneys.exists() and not overwrite:
+        raise FileExistsError(published_property_moneys)
+    shutil.copy2(property_moneys_path, published_property_moneys)
 
 
     # --------------------------------------------------------

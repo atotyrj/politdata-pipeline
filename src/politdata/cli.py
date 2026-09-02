@@ -10,6 +10,9 @@ from .change_set import DEFAULT_CURRENT_CHANGE_SET_PATH, load_change_set
 from .ingestion_preflight import build_ingestion_preflight
 from .incremental_pipeline import run_incremental_downstream
 from .ingestion_runner import run_limited_organization_ingestion
+from .orchestrator import RunConfig, run_pipeline
+from .orchestrator import DEFAULT_CONTROL_ROOT, DEFAULT_GENERATION_ROOT
+from .storage import LocalGenerationStore
 
 
 def change_set_summary(change_set):
@@ -41,7 +44,7 @@ def build_parser():
         prog="politdata",
         description=(
             "Safe local controls for the PolitData incremental pipeline. "
-            "These commands never start RAW ingestion."
+            "Only the explicit ingest command performs online RAW ingestion."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -83,7 +86,21 @@ def build_parser():
     )
     ingest_parser.add_argument(
         "--report-limit", type=int,
-        help="Opt in to bounded report discovery/detail; maximum details to fetch.",
+        help="Opt in to report details; maximum pending details to fetch.",
+    )
+    ingest_parser.add_argument(
+        "--report-discovery-limit",
+        type=int,
+        help=(
+            "Maximum due organization report lists to refresh. "
+            "Defaults to --organization-limit when --report-limit is used."
+        ),
+    )
+    ingest_parser.add_argument(
+        "--report-refresh-interval-days",
+        type=float,
+        default=7,
+        help="Days between successful report-list checks (default: 7).",
     )
     ingest_parser.add_argument(
         "--change-set",
@@ -96,6 +113,58 @@ def build_parser():
         help="Create the factual change set but do not process it yet.",
     )
     ingest_parser.add_argument("--json", action="store_true")
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Unified guarded orchestration for incremental or full-replace.",
+    )
+    run_parser.add_argument(
+        "--mode",
+        required=True,
+        choices=("incremental", "full-replace"),
+    )
+    run_parser.add_argument("--organization-limit", type=int)
+    run_parser.add_argument("--report-discovery-limit", type=int)
+    run_parser.add_argument("--report-limit", type=int)
+    run_parser.add_argument(
+        "--report-refresh-interval-days",
+        type=float,
+        default=7,
+    )
+    run_parser.add_argument(
+        "--change-set",
+        type=_change_set_path,
+        default=DEFAULT_CURRENT_CHANGE_SET_PATH,
+    )
+    run_parser.add_argument("--skip-downstream", action="store_true")
+    run_parser.add_argument("--confirm-full-replace", action="store_true")
+    run_parser.add_argument("--publish", action="store_true")
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and print the plan without writes or network requests.",
+    )
+    run_parser.add_argument("--json", action="store_true")
+
+    restore_parser = subparsers.add_parser(
+        "restore",
+        help="Restore and checksum-verify an immutable generation.",
+    )
+    selection = restore_parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument(
+        "--latest", action="store_true", help="Restore the generation in latest.json."
+    )
+    selection.add_argument("--generation-id")
+    restore_parser.add_argument("--destination", type=Path, required=True)
+    restore_parser.add_argument(
+        "--generation-root", type=Path, default=DEFAULT_GENERATION_ROOT
+    )
+    restore_parser.add_argument(
+        "--latest-pointer",
+        type=Path,
+        default=DEFAULT_CONTROL_ROOT / "latest.json",
+    )
+    restore_parser.add_argument("--json", action="store_true")
 
     return parser
 
@@ -127,7 +196,58 @@ def main(argv=None):
                 change_set_path=args.change_set,
                 run_downstream=not args.skip_downstream,
                 report_limit=args.report_limit,
+                report_discovery_limit=args.report_discovery_limit,
+                report_refresh_interval_days=args.report_refresh_interval_days,
             ),
+            as_json=args.json,
+        )
+        return 0
+
+    if args.command == "run":
+        try:
+            result = run_pipeline(
+                RunConfig(
+                    mode=args.mode,
+                    organization_limit=args.organization_limit,
+                    report_discovery_limit=args.report_discovery_limit,
+                    report_detail_limit=args.report_limit,
+                    report_refresh_interval_days=(
+                        args.report_refresh_interval_days
+                    ),
+                    change_set_path=args.change_set,
+                    run_downstream=not args.skip_downstream,
+                    confirm_full_replace=args.confirm_full_replace,
+                    publish=args.publish,
+                    dry_run=args.dry_run,
+                )
+            )
+        except (ValueError, RuntimeError) as error:
+            raise SystemExit(str(error)) from error
+        _print_result(result, as_json=args.json)
+        return 0
+
+    if args.command == "restore":
+        store = LocalGenerationStore(args.generation_root, args.latest_pointer)
+        try:
+            if args.latest:
+                pointer = store.read_latest()
+                if pointer is None:
+                    raise FileNotFoundError(args.latest_pointer)
+                generation_id = pointer.get("generation_id")
+                restored = store.restore_latest(args.destination)
+            else:
+                generation_id = args.generation_id
+                restored = store.restore_generation(
+                    generation_id, args.destination
+                )
+        except (OSError, ValueError, RuntimeError) as error:
+            raise SystemExit(str(error)) from error
+        _print_result(
+            {
+                "status": "restored",
+                "generation_id": generation_id,
+                "destination": restored,
+            },
             as_json=args.json,
         )
         return 0
