@@ -276,6 +276,8 @@ no-change run не переписує дані, повторний запуск 
 
 - [x] Push/PR workflow: інсталяція на чистому Python 3.11 runner та всі offline
   tests без online ingestion; перший run успішний.
+- [x] Додати ручний GitHub Releases rehearsal на синтетичному поколінні: upload,
+  download, checksum verification без зміни latest і без доступу до НАЗК.
 - Додати lint/format checks після вибору відповідних інструментів.
 - Scheduled workflow: incremental з concurrency, cache, timeout і summary.
 - Manual full workflow: environment approval та обов'язковий dry-run/preflight.

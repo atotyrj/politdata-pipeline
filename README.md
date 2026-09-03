@@ -131,6 +131,12 @@ being truncated. See
 [`docs/github_releases_storage.md`](docs/github_releases_storage.md) for the
 asset contract, rollback and operational safeguards.
 
+Before enabling real data publication, the manual **GitHub Releases storage
+rehearsal** workflow can exercise the actual GitHub API using a tiny synthetic
+generation. It never contacts the NACP API and never changes the latest release.
+By default it preserves the resulting draft for inspection; deletion is an
+explicit workflow input.
+
 ## Generation maintenance
 
 Preview which immutable generations fall outside the default three-generation

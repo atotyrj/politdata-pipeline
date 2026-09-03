@@ -273,6 +273,30 @@ def build_parser():
     _add_generation_store_arguments(catalog_parser)
     catalog_parser.add_argument("--json", action="store_true")
 
+    rehearsal_parser = subparsers.add_parser(
+        "release-rehearsal",
+        help=(
+            "Upload and restore a tiny synthetic draft generation through "
+            "GitHub Releases; never changes latest."
+        ),
+    )
+    rehearsal_parser.add_argument("--generation-id", required=True)
+    rehearsal_parser.add_argument(
+        "--github-repository",
+        help="GitHub repository in OWNER/REPO format; defaults to GITHUB_REPOSITORY.",
+    )
+    rehearsal_parser.add_argument(
+        "--confirm-release-rehearsal",
+        action="store_true",
+        help="Required guard confirming creation of a synthetic draft release.",
+    )
+    rehearsal_parser.add_argument(
+        "--delete-after-verification",
+        action="store_true",
+        help="Also delete the verified draft release and tag.",
+    )
+    rehearsal_parser.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -308,6 +332,30 @@ def main(argv=None):
             ),
             as_json=args.json,
         )
+        return 0
+
+    if args.command == "release-rehearsal":
+        if not args.confirm_release_rehearsal:
+            raise SystemExit(
+                "release-rehearsal requires --confirm-release-rehearsal."
+            )
+        repository = args.github_repository or os.environ.get("GITHUB_REPOSITORY")
+        if not repository:
+            raise SystemExit(
+                "release-rehearsal requires --github-repository OWNER/REPO "
+                "or GITHUB_REPOSITORY."
+            )
+        try:
+            from .release_rehearsal import run_release_rehearsal
+
+            result = run_release_rehearsal(
+                repository,
+                args.generation_id,
+                delete_after_verification=args.delete_after_verification,
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            raise SystemExit(str(error)) from error
+        _print_result(result, as_json=args.json)
         return 0
 
     if args.command == "run":

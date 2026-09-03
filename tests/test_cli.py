@@ -111,6 +111,48 @@ def test_github_release_restore_requires_environment_token(tmp_path, monkeypatch
         ])
 
 
+def test_release_rehearsal_requires_explicit_confirmation():
+    with pytest.raises(SystemExit, match="confirm-release-rehearsal"):
+        main([
+            "release-rehearsal",
+            "--generation-id", "rehearsal-1",
+            "--github-repository", "atotyrj/politdata-pipeline",
+        ])
+
+
+def test_release_rehearsal_cli_uses_synthetic_runner(monkeypatch, capsys):
+    captured = {}
+
+    def run(repository, generation_id, **kwargs):
+        captured.update(
+            repository=repository,
+            generation_id=generation_id,
+            **kwargs,
+        )
+        return {"status": "verified", "latest_changed": False}
+
+    monkeypatch.setattr(
+        "politdata.release_rehearsal.run_release_rehearsal",
+        run,
+    )
+
+    assert main([
+        "release-rehearsal",
+        "--generation-id", "rehearsal-3",
+        "--github-repository", "atotyrj/politdata-pipeline",
+        "--confirm-release-rehearsal",
+        "--delete-after-verification",
+        "--json",
+    ]) == 0
+
+    assert captured == {
+        "repository": "atotyrj/politdata-pipeline",
+        "generation_id": "rehearsal-3",
+        "delete_after_verification": True,
+    }
+    assert json.loads(capsys.readouterr().out)["latest_changed"] is False
+
+
 def test_unified_incremental_run_requires_explicit_limit():
     with pytest.raises(SystemExit, match="organization_limit"):
         main(["run", "--mode", "incremental", "--dry-run"])

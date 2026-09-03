@@ -77,9 +77,22 @@ permissions:
 репозиторії не потрібно. CI workflow лишається з `contents: read`; право запису
 отримає тільки майбутній окремий workflow оновлення даних.
 
-## Що ще не вмикається цією зміною
+## Ручний rehearsal
 
-Adapter не запускає ingestion самостійно і не додає розклад. Наступним етапом
-буде окремий ручний rehearsal workflow на малому fixture, а після нього —
-scheduled incremental workflow з concurrency, timeout, відновленням latest та
-публікацією лише при фактичних змінах.
+Workflow **GitHub Releases storage rehearsal** запускається лише вручну через
+`workflow_dispatch`. Він:
+
+1. створює крихітне синтетичне покоління з RAW, interim, processed та валідним
+   Excel fixture;
+2. публікує його як draft через справжній GitHub API;
+3. завантажує ZIP-assets назад на чистий runner;
+4. перевіряє всі checksums і наявність окремого Excel asset;
+5. ніколи не викликає `publish_latest`.
+
+Параметр `delete_after_verification` за замовчуванням має значення `false`, тому
+draft залишається для ручного огляду. Значення `true` явно дозволяє видалити
+синтетичний release і tag після успішної перевірки.
+
+Adapter і rehearsal не запускають ingestion самостійно. Наступним етапом після
+першого успішного rehearsal буде scheduled incremental workflow з concurrency,
+timeout, відновленням latest та публікацією лише при фактичних змінах.

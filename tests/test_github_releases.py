@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -20,6 +21,10 @@ from politdata.storage import (
     file_hash,
     payload_hash,
     verify_generation,
+)
+from politdata.release_rehearsal import (
+    build_rehearsal_generation,
+    run_release_rehearsal,
 )
 
 
@@ -270,3 +275,41 @@ def test_bundle_rejects_single_file_over_configured_limit(tmp_path):
             "g1",
             max_asset_bytes=1024 * 1024 + 1024,
         )
+
+
+def test_rehearsal_generation_is_small_valid_and_synthetic(tmp_path):
+    destination = tmp_path / "rehearsal"
+
+    manifest = build_rehearsal_generation(destination, "rehearsal-1")
+
+    assert verify_generation(destination) == manifest
+    assert manifest["qa"] == {"passed": True, "synthetic_fixture": True}
+    assert set(manifest["artifact_checksums"]) == {
+        "raw/rehearsal_source.json",
+        "interim/rehearsal_checkpoint.json",
+        "processed/rehearsal_result.json",
+        "outputs/rehearsal.xlsx",
+    }
+    assert zipfile.is_zipfile(destination / "outputs" / "rehearsal.xlsx")
+
+
+@pytest.mark.parametrize("delete_after", [False, True])
+def test_release_rehearsal_uploads_restores_and_optionally_deletes(delete_after):
+    client = MemoryReleaseClient()
+
+    result = run_release_rehearsal(
+        "atotyrj/politdata-pipeline",
+        "rehearsal-2",
+        client=client,
+        delete_after_verification=delete_after,
+    )
+
+    assert result["status"] == "verified"
+    assert result["source"] == "synthetic_fixture_only"
+    assert result["latest_changed"] is False
+    assert result["draft_deleted"] is delete_after
+    release = client.get_release_by_tag("politdata-data-rehearsal-2")
+    assert (release is None) is delete_after
+    if release is not None:
+        assert release["draft"] is True
+        assert "rehearsal.xlsx" in {asset["name"] for asset in release["assets"]}

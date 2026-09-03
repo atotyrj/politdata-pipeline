@@ -1,0 +1,67 @@
+name: GitHub Releases storage rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      delete_after_verification:
+        description: Delete the synthetic draft release after successful restore
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: politdata-release-writer
+  cancel-in-progress: false
+
+jobs:
+  rehearsal:
+    name: Upload, restore and verify synthetic generation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      REHEARSAL_GENERATION_ID: rehearsal-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install project
+        run: python -m pip install --upgrade pip && python -m pip install -e .
+
+      - name: Rehearse storage and keep draft for inspection
+        if: ${{ !inputs.delete_after_verification }}
+        run: >-
+          politdata release-rehearsal
+          --generation-id "$REHEARSAL_GENERATION_ID"
+          --github-repository "$GITHUB_REPOSITORY"
+          --confirm-release-rehearsal
+          --json
+
+      - name: Rehearse storage and delete draft after verification
+        if: ${{ inputs.delete_after_verification }}
+        run: >-
+          politdata release-rehearsal
+          --generation-id "$REHEARSAL_GENERATION_ID"
+          --github-repository "$GITHUB_REPOSITORY"
+          --confirm-release-rehearsal
+          --delete-after-verification
+          --json
+
+      - name: Write run summary
+        if: ${{ always() }}
+        run: |
+          echo "## PolitData GitHub Releases rehearsal" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Generation: \`$REHEARSAL_GENERATION_ID\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Fixture: synthetic only; no NACP API access" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Latest release: never changed by this workflow" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Delete after verification: \`${{ inputs.delete_after_verification }}\`" >> "$GITHUB_STEP_SUMMARY"
