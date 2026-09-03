@@ -4,6 +4,37 @@
 
 Local development project for downloading, cleaning, enriching, transforming, validating and analyzing data from the NACP PolitData registry.
 
+## Завантажити актуальні таблиці Excel
+
+Посилання нижче завжди ведуть на відповідний файл у
+[`Latest Release`](https://github.com/atotyrj/politdata-pipeline/releases/latest).
+Після успішного щотижневого оновлення вони автоматично відкриватимуть нову
+версію файлу без ручної зміни README.
+
+| Файл | Вміст |
+|---|---|
+| [01_party_information.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/01_party_information.xlsx) | Відомості про партію або осередок за кожним відібраним звітом: адреса, керівник, сайт і працівники. |
+| [02_properties__intangible.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/02_properties__intangible.xlsx) | Нематеріальні активи та інше майно партій і осередків. |
+| [03_properties__movable.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/03_properties__movable.xlsx) | Рухоме майно, крім транспортних засобів. |
+| [04_properties__property_moneys.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/04_properties__property_moneys.xlsx) | Грошові активи, залишки та рух коштів, відображені у майновій частині звітів. |
+| [05_properties__realty.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/05_properties__realty.xlsx) | Об'єкти нерухомості партій і осередків. |
+| [06_properties__paper.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/06_properties__paper.xlsx) | Цінні папери, зазначені у відібраних звітах. |
+| [07_properties__transport.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/07_properties__transport.xlsx) | Транспортні засоби партій і осередків. |
+| [08_payments__other_contributions.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/08_payments__other_contributions.xlsx) | Негрошові внески майном, роботами або послугами. |
+| [09_payments__monetary_contributions.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/09_payments__monetary_contributions.xlsx) | Приватні грошові внески фізичних та юридичних осіб. |
+| [10_payments__state_funding.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/10_payments__state_funding.xlsx) | Надходження коштів державного фінансування. |
+| [11_payments__other_incomes.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/11_payments__other_incomes.xlsx) | Інші надходження, які не належать до внесків або державного фінансування. |
+| [12_payments__budget_expenses.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/12_payments__budget_expenses.xlsx) | Витрати коштів державного фінансування. |
+| [13_payments__outgoing_expenses.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/13_payments__outgoing_expenses.xlsx) | Інші вихідні платежі та витрати приватних коштів, включно з аналітично перекласифікованими операціями. |
+| [14_payments__return_expenses.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/14_payments__return_expenses.xlsx) | Повернення помилкових або інших надходжень. |
+| [15_payments__transfer_expenses.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/15_payments__transfer_expenses.xlsx) | Перекази коштів між рахунками та внутрішньопартійні трансфери цього типу. |
+| [16_obligations__obligations.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/16_obligations__obligations.xlsx) | Фінансові зобов'язання партій і осередків. |
+| [17_organizations__reporting_history.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/17_organizations__reporting_history.xlsx) | Матриця наявності відібраних звітів за організаціями та звітними періодами. |
+| [18_organizations__report_name_history.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/18_organizations__report_name_history.xlsx) | Хронологія назв організації у послідовних звітах і позначки їх зміни. |
+
+Повний список поколінь і службові архіви для відновлення доступні у розділі
+[`Releases`](https://github.com/atotyrj/politdata-pipeline/releases).
+
 ## Structure
 
 - `notebooks/exploration/` - API and data exploration
@@ -188,9 +219,10 @@ partially completed change set it resumes pending or failed stages, but refuses
 an ambiguous stage marked `running`; reconcile that state before retrying.
 
 Do not replace `current.json` merely to test the command. Use a separate
-validation path for an isolated no-change control run. GitHub CI now runs the
-offline test suite after every push and pull request; scheduled ingestion and
-public artifact publication remain a later deployment step.
+validation path for an isolated no-change control run. GitHub CI runs the
+offline test suite after every push and pull request. The production workflow
+runs a bounded incremental update every Monday at 03:37 Europe/Kyiv and
+publishes a new release only when source changes pass QA.
 
 The implementation roadmap for full replacement, manual incremental updates,
 scheduled GitHub updates, persistent state and public artifacts is documented in
