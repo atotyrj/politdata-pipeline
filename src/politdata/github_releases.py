@@ -591,7 +591,16 @@ class GitHubReleaseGenerationStore:
                     max_asset_bytes=self.max_asset_bytes,
                 )
             else:
-                manifest = verify_generation(source_root)
+                try:
+                    manifest = json.loads(
+                        (source_root / GENERATION_MANIFEST_NAME).read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                except (OSError, ValueError) as error:
+                    raise GenerationIntegrityError(
+                        "Local generation manifest is unavailable during resume."
+                    ) from error
                 index = self._download_json_asset(
                     existing_release,
                     BUNDLE_INDEX_NAME,
@@ -670,11 +679,15 @@ class GitHubReleaseGenerationStore:
                     name = item["name"]
                     path = source_root / item["source_path"]
                     if name in uploaded:
-                        if _asset_digest(uploaded[name]) != file_hash(path):
+                        if _asset_digest(uploaded[name]) != item["sha256"]:
                             raise GenerationIntegrityError(
-                                f"Existing draft asset differs from local workbook: {name}"
+                                f"Existing draft workbook differs from index: {name}"
                             )
                         continue
+                    if file_hash(path) != item["sha256"]:
+                        raise GenerationIntegrityError(
+                            f"Local workbook differs from draft index: {name}"
+                        )
                     asset = self.client.upload_asset(release, path, name=name)
                     uploaded[name] = asset
             except Exception:
