@@ -263,16 +263,25 @@ class GitHubReleaseClient:
 def _generation_files(source_dir):
     source_dir = Path(source_dir).resolve()
     files = []
-    for candidate in sorted(source_dir.rglob("*")):
-        if candidate.is_symlink():
-            raise GenerationIntegrityError(
-                f"Generation contains a symbolic link: {candidate}"
-            )
-        if not candidate.is_file():
-            continue
-        relative = candidate.relative_to(source_dir).as_posix()
-        files.append((relative, candidate, candidate.stat().st_size))
-    return files
+    for directory, directory_names, file_names in os.walk(source_dir):
+        directory_names.sort()
+        file_names.sort()
+        root = Path(directory)
+        for name in directory_names:
+            candidate = root / name
+            if candidate.is_symlink():
+                raise GenerationIntegrityError(
+                    f"Generation contains a symbolic link: {candidate}"
+                )
+        for name in file_names:
+            candidate = root / name
+            if candidate.is_symlink():
+                raise GenerationIntegrityError(
+                    f"Generation contains a symbolic link: {candidate}"
+                )
+            relative = candidate.relative_to(source_dir).as_posix()
+            files.append((relative, candidate, candidate.stat().st_size))
+    return sorted(files, key=lambda item: item[0])
 
 
 def _bundle_groups(files, max_asset_bytes):
