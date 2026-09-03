@@ -223,6 +223,11 @@ def test_release_store_resumes_matching_draft_without_reuploading_assets(tmp_pat
         bundle / GENERATION_MANIFEST_NAME,
         name=GENERATION_MANIFEST_NAME,
     )
+    client.upload_asset(
+        release,
+        bundle / BUNDLE_INDEX_NAME,
+        name=BUNDLE_INDEX_NAME,
+    )
 
     store.publish_generation(source, "g1", resume_draft=True)
 

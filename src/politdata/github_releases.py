@@ -398,6 +398,41 @@ def build_generation_bundle(
     return index
 
 
+def _build_indexed_bundle_asset(source_dir, destination, item):
+    """Recreate one missing ZIP from a previously verified bundle index."""
+
+    source_dir = Path(source_dir).resolve()
+    destination = Path(destination)
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_STORED) as archive:
+        for relative in item["files"]:
+            pure = PurePosixPath(relative)
+            if pure.is_absolute() or ".." in pure.parts:
+                raise GenerationIntegrityError(
+                    f"Unsafe path in generation bundle index: {relative}"
+                )
+            source = (source_dir / Path(*pure.parts)).resolve()
+            try:
+                source.relative_to(source_dir)
+            except ValueError as error:
+                raise GenerationIntegrityError(
+                    f"Bundle-index path escapes generation: {relative}"
+                ) from error
+            if not source.is_file() or source.is_symlink():
+                raise GenerationIntegrityError(
+                    f"Bundle-index artifact is unavailable: {relative}"
+                )
+            archive.write(source, arcname=relative)
+    if destination.stat().st_size != int(item["size"]):
+        raise GenerationIntegrityError(
+            f"Recreated bundle size mismatch: {item['name']}"
+        )
+    if file_hash(destination) != item["sha256"]:
+        raise GenerationIntegrityError(
+            f"Recreated bundle checksum mismatch: {item['name']}"
+        )
+    return destination
+
+
 def _asset_map(release):
     return {asset["name"]: asset for asset in release.get("assets") or []}
 
@@ -547,30 +582,45 @@ class GitHubReleaseGenerationStore:
             raise FileExistsError(self.generation_location(generation_id))
         with tempfile.TemporaryDirectory(prefix="politdata-release-build-") as temporary:
             bundle_root = Path(temporary)
-            index = build_generation_bundle(
-                source_dir,
-                bundle_root,
-                generation_id,
-                max_asset_bytes=self.max_asset_bytes,
-            )
-            release = existing_release or self.client.create_release(
-                    tag=tag,
-                    name=f"PolitData generation {generation_id}",
-                    body=(
-                        "Immutable PolitData generation. Assets are checksum-verified; "
-                        "the release remains draft until QA-gated publication."
-                    ),
-                    target_commitish=self.target_commitish,
+            source_root = Path(source_dir)
+            if existing_release is None:
+                index = build_generation_bundle(
+                    source_root,
+                    bundle_root,
+                    generation_id,
+                    max_asset_bytes=self.max_asset_bytes,
                 )
+            else:
+                manifest = verify_generation(source_root)
+                index = self._download_json_asset(
+                    existing_release,
+                    BUNDLE_INDEX_NAME,
+                    bundle_root / BUNDLE_INDEX_NAME,
+                )
+                if index.get("generation_id") != generation_id:
+                    raise GenerationIntegrityError(
+                        "Draft release bundle generation ID mismatch."
+                    )
+                if index.get("generation_manifest_hash") != payload_hash(manifest):
+                    raise GenerationIntegrityError(
+                        "Draft release manifest differs from local generation."
+                    )
+                shutil.copy2(
+                    source_root / GENERATION_MANIFEST_NAME,
+                    bundle_root / GENERATION_MANIFEST_NAME,
+                )
+            release = existing_release or self.client.create_release(
+                tag=tag,
+                name=f"PolitData generation {generation_id}",
+                body=(
+                    "Immutable PolitData generation. Assets are checksum-verified; "
+                    "the release remains draft until QA-gated publication."
+                ),
+                target_commitish=self.target_commitish,
+            )
             created_release = existing_release is None
             self._release_ids[generation_id] = release["id"]
             try:
-                upload_names = [
-                    GENERATION_MANIFEST_NAME,
-                    BUNDLE_INDEX_NAME,
-                    *(item["name"] for item in index["bundle_assets"]),
-                ]
-                source_root = Path(source_dir)
                 public_catalog = {
                     "schema_version": 1,
                     "generation_id": generation_id,
@@ -588,16 +638,32 @@ class GitHubReleaseGenerationStore:
                         }
                     )
                 atomic_json(bundle_root / PUBLIC_CATALOG_NAME, public_catalog)
-                upload_names.append(PUBLIC_CATALOG_NAME)
                 uploaded = _asset_map(release)
-                for name in upload_names:
-                    path = bundle_root / name
+                fixed_assets = (
+                    (GENERATION_MANIFEST_NAME, bundle_root / GENERATION_MANIFEST_NAME),
+                    (BUNDLE_INDEX_NAME, bundle_root / BUNDLE_INDEX_NAME),
+                    (PUBLIC_CATALOG_NAME, bundle_root / PUBLIC_CATALOG_NAME),
+                )
+                for name, path in fixed_assets:
                     if name in uploaded:
                         if _asset_digest(uploaded[name]) != file_hash(path):
                             raise GenerationIntegrityError(
                                 f"Existing draft asset differs from local bundle: {name}"
                             )
                         continue
+                    asset = self.client.upload_asset(release, path, name=name)
+                    uploaded[name] = asset
+                for item in index["bundle_assets"]:
+                    name = item["name"]
+                    if name in uploaded:
+                        if _asset_digest(uploaded[name]) != item["sha256"]:
+                            raise GenerationIntegrityError(
+                                f"Existing draft bundle differs from index: {name}"
+                            )
+                        continue
+                    path = bundle_root / name
+                    if not path.exists():
+                        _build_indexed_bundle_asset(source_root, path, item)
                     asset = self.client.upload_asset(release, path, name=name)
                     uploaded[name] = asset
                 for item in index["public_assets"]:
