@@ -16,6 +16,7 @@ def main(argv=None):
     parser.add_argument("--generation-id", required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--confirm-publish", action="store_true")
+    parser.add_argument("--resume-draft", action="store_true")
     args = parser.parse_args(argv)
     if not args.confirm_publish:
         raise SystemExit("Publishing requires --confirm-publish")
@@ -26,7 +27,11 @@ def main(argv=None):
         raise SystemExit("Generation ID does not match generation_manifest.json")
     store = GitHubReleaseGenerationStore(args.repository)
     previous = store.read_latest()
-    location = store.publish_generation(args.source, args.generation_id)
+    location = store.publish_generation(
+        args.source,
+        args.generation_id,
+        resume_draft=args.resume_draft,
+    )
     latest = store.publish_latest(
         {
             "generation_id": args.generation_id,

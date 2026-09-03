@@ -537,10 +537,13 @@ class GitHubReleaseGenerationStore:
             raise GenerationIntegrityError("Generation ID does not match release.")
         return manifest
 
-    def publish_generation(self, source_dir, generation_id):
+    def publish_generation(self, source_dir, generation_id, *, resume_draft=False):
         generation_id = _safe_generation_id(generation_id)
         tag = self._tag(generation_id)
-        if self._find_release(generation_id) is not None:
+        existing_release = self._find_release(generation_id)
+        if existing_release is not None and not (
+            resume_draft and existing_release.get("draft") is True
+        ):
             raise FileExistsError(self.generation_location(generation_id))
         with tempfile.TemporaryDirectory(prefix="politdata-release-build-") as temporary:
             bundle_root = Path(temporary)
@@ -550,15 +553,16 @@ class GitHubReleaseGenerationStore:
                 generation_id,
                 max_asset_bytes=self.max_asset_bytes,
             )
-            release = self.client.create_release(
-                tag=tag,
-                name=f"PolitData generation {generation_id}",
-                body=(
-                    "Immutable PolitData generation. Assets are checksum-verified; "
-                    "the release remains draft until QA-gated publication."
-                ),
-                target_commitish=self.target_commitish,
-            )
+            release = existing_release or self.client.create_release(
+                    tag=tag,
+                    name=f"PolitData generation {generation_id}",
+                    body=(
+                        "Immutable PolitData generation. Assets are checksum-verified; "
+                        "the release remains draft until QA-gated publication."
+                    ),
+                    target_commitish=self.target_commitish,
+                )
+            created_release = existing_release is None
             self._release_ids[generation_id] = release["id"]
             try:
                 upload_names = [
@@ -585,17 +589,32 @@ class GitHubReleaseGenerationStore:
                     )
                 atomic_json(bundle_root / PUBLIC_CATALOG_NAME, public_catalog)
                 upload_names.append(PUBLIC_CATALOG_NAME)
+                uploaded = _asset_map(release)
                 for name in upload_names:
-                    self.client.upload_asset(release, bundle_root / name, name=name)
+                    path = bundle_root / name
+                    if name in uploaded:
+                        if _asset_digest(uploaded[name]) != file_hash(path):
+                            raise GenerationIntegrityError(
+                                f"Existing draft asset differs from local bundle: {name}"
+                            )
+                        continue
+                    asset = self.client.upload_asset(release, path, name=name)
+                    uploaded[name] = asset
                 for item in index["public_assets"]:
-                    self.client.upload_asset(
-                        release,
-                        source_root / item["source_path"],
-                        name=item["name"],
-                    )
+                    name = item["name"]
+                    path = source_root / item["source_path"]
+                    if name in uploaded:
+                        if _asset_digest(uploaded[name]) != file_hash(path):
+                            raise GenerationIntegrityError(
+                                f"Existing draft asset differs from local workbook: {name}"
+                            )
+                        continue
+                    asset = self.client.upload_asset(release, path, name=name)
+                    uploaded[name] = asset
             except Exception:
-                self.client.delete_release(release["id"])
-                self._release_ids.pop(generation_id, None)
+                if created_release:
+                    self.client.delete_release(release["id"])
+                    self._release_ids.pop(generation_id, None)
                 raise
         return self.generation_location(generation_id)
 

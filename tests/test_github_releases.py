@@ -206,6 +206,33 @@ def test_release_store_publishes_draft_then_latest_and_restores(tmp_path):
     assert (restored / "raw" / "source.json").read_bytes() == b'{"private": true}'
 
 
+def test_release_store_resumes_matching_draft_without_reuploading_assets(tmp_path):
+    client = MemoryReleaseClient()
+    store = _store(client)
+    source = tmp_path / "source"
+    _generation(source)
+    bundle = tmp_path / "bundle"
+    build_generation_bundle(source, bundle, "g1")
+    release = client.create_release(
+        tag="politdata-data-g1",
+        name="PolitData generation g1",
+        body="partial",
+    )
+    client.upload_asset(
+        release,
+        bundle / GENERATION_MANIFEST_NAME,
+        name=GENERATION_MANIFEST_NAME,
+    )
+
+    store.publish_generation(source, "g1", resume_draft=True)
+
+    names = [asset["name"] for asset in release["assets"]]
+    assert names.count(GENERATION_MANIFEST_NAME) == 1
+    assert BUNDLE_INDEX_NAME in names
+    assert PUBLIC_CATALOG_NAME in names
+    assert "payments.xlsx" in names
+
+
 def test_release_store_discovers_draft_from_authenticated_release_list(tmp_path):
     class DraftListClient(MemoryReleaseClient):
         def get_release_by_tag(self, tag):
