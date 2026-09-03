@@ -127,6 +127,13 @@ class GitHubReleaseClient:
             )
         return response.json()
 
+    def get_release(self, release_id):
+        response = self._request(
+            "GET",
+            f"{self.releases_url}/{int(release_id)}",
+        )
+        return response.json()
+
     def get_latest_release(self):
         response = self.session.request(
             "GET",
@@ -428,6 +435,7 @@ class GitHubReleaseGenerationStore:
         self.target_commitish = target_commitish
         self.tag_prefix = tag_prefix
         self.max_asset_bytes = int(max_asset_bytes)
+        self._release_ids = {}
 
     @property
     def latest_location(self):
@@ -444,8 +452,30 @@ class GitHubReleaseGenerationStore:
             )
         return _safe_generation_id(tag[len(self.tag_prefix):])
 
+    def _find_release(self, generation_id):
+        generation_id = _safe_generation_id(generation_id)
+        known_id = self._release_ids.get(generation_id)
+        if known_id is not None:
+            release = self.client.get_release(known_id)
+            if release is not None:
+                return release
+        tag = self._tag(generation_id)
+        release = self.client.get_release_by_tag(tag)
+        if release is None:
+            release = next(
+                (
+                    candidate
+                    for candidate in self.client.list_releases()
+                    if str(candidate.get("tag_name") or "") == tag
+                ),
+                None,
+            )
+        if release is not None:
+            self._release_ids[generation_id] = release["id"]
+        return release
+
     def _release(self, generation_id):
-        release = self.client.get_release_by_tag(self._tag(generation_id))
+        release = self._find_release(generation_id)
         if release is None:
             raise FileNotFoundError(self.generation_location(generation_id))
         return release
@@ -498,7 +528,7 @@ class GitHubReleaseGenerationStore:
     def publish_generation(self, source_dir, generation_id):
         generation_id = _safe_generation_id(generation_id)
         tag = self._tag(generation_id)
-        if self.client.get_release_by_tag(tag) is not None:
+        if self._find_release(generation_id) is not None:
             raise FileExistsError(self.generation_location(generation_id))
         with tempfile.TemporaryDirectory(prefix="politdata-release-build-") as temporary:
             bundle_root = Path(temporary)
@@ -517,6 +547,7 @@ class GitHubReleaseGenerationStore:
                 ),
                 target_commitish=self.target_commitish,
             )
+            self._release_ids[generation_id] = release["id"]
             try:
                 upload_names = [
                     GENERATION_MANIFEST_NAME,
@@ -552,6 +583,7 @@ class GitHubReleaseGenerationStore:
                     )
             except Exception:
                 self.client.delete_release(release["id"])
+                self._release_ids.pop(generation_id, None)
                 raise
         return self.generation_location(generation_id)
 
@@ -692,4 +724,5 @@ class GitHubReleaseGenerationStore:
         release = self._release(generation_id)
         self.client.delete_release(release["id"])
         self.client.delete_tag(self._tag(generation_id))
+        self._release_ids.pop(generation_id, None)
         return self.generation_location(generation_id)

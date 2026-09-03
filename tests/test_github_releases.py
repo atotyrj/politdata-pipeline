@@ -38,6 +38,16 @@ class MemoryReleaseClient:
     def get_release_by_tag(self, tag):
         return self.releases.get(tag)
 
+    def get_release(self, release_id):
+        return next(
+            (
+                release
+                for release in self.releases.values()
+                if release["id"] == release_id
+            ),
+            None,
+        )
+
     def get_latest_release(self):
         if self.latest_id is None:
             return None
@@ -194,6 +204,26 @@ def test_release_store_publishes_draft_then_latest_and_restores(tmp_path):
     store.restore_latest(restored)
     assert verify_generation(restored) == manifest
     assert (restored / "raw" / "source.json").read_bytes() == b'{"private": true}'
+
+
+def test_release_store_discovers_draft_from_authenticated_release_list(tmp_path):
+    class DraftListClient(MemoryReleaseClient):
+        def get_release_by_tag(self, tag):
+            release = super().get_release_by_tag(tag)
+            if release and release["draft"]:
+                return None
+            return release
+
+    client = DraftListClient()
+    source = tmp_path / "source"
+    _generation(source)
+    _store(client).publish_generation(source, "g1")
+
+    fresh_store = _store(client)
+    restored = tmp_path / "restored"
+    fresh_store.restore_generation("g1", restored)
+
+    assert verify_generation(restored)["generation_id"] == "g1"
 
 
 def test_release_public_catalog_has_direct_workbook_links_only(tmp_path):
