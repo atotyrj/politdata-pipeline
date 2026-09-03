@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -85,7 +86,7 @@ def atomic_json(path, payload):
         temporary.unlink(missing_ok=True)
 
 
-def verify_generation(path, *, expected_manifest_hash=None):
+def verify_generation(path, *, expected_manifest_hash=None, workers=8):
     """Verify a generation manifest and every declared artifact checksum."""
 
     path = Path(path)
@@ -101,6 +102,7 @@ def verify_generation(path, *, expected_manifest_hash=None):
     checksums = manifest.get("artifact_checksums")
     if not isinstance(checksums, dict):
         raise GenerationIntegrityError("Generation manifest has no artifact checksums.")
+    artifacts = []
     for relative, expected in checksums.items():
         candidate = (path / relative).resolve()
         try:
@@ -111,8 +113,18 @@ def verify_generation(path, *, expected_manifest_hash=None):
             ) from error
         if not candidate.is_file():
             raise GenerationIntegrityError(f"Generation artifact not found: {relative}")
-        actual = file_hash(candidate)
-        if actual != expected:
+        artifacts.append((relative, candidate, expected))
+
+    def check_artifact(item):
+        relative, candidate, expected = item
+        return relative, file_hash(candidate), expected
+
+    worker_count = max(1, int(workers))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        results = executor.map(check_artifact, artifacts, chunksize=32)
+        for relative, actual, expected in results:
+            if actual == expected:
+                continue
             raise GenerationIntegrityError(
                 f"Generation artifact checksum mismatch: {relative}"
             )
