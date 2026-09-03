@@ -93,6 +93,22 @@ Workflow **GitHub Releases storage rehearsal** запускається лише
 draft залишається для ручного огляду. Значення `true` явно дозволяє видалити
 синтетичний release і tag після успішної перевірки.
 
-Adapter і rehearsal не запускають ingestion самостійно. Наступним етапом після
-першого успішного rehearsal буде scheduled incremental workflow з concurrency,
-timeout, відновленням latest та публікацією лише при фактичних змінах.
+## Щотижневе оновлення
+
+Workflow **PolitData weekly incremental update** запускається щопонеділка о
+03:37 у часовому поясі `Europe/Kyiv` (із автоматичним урахуванням літнього часу),
+а також може бути запущений вручну. Він серіалізований тим самим writer-lock
+group, що й rehearsal, і виконує такий цикл:
+
+1. відновлює checksum-verified latest generation;
+2. лімітовано перевіряє картки організацій, списки звітів і нові report details;
+3. запускає changed-only normalization, references та enrichment;
+4. при фактичних змінах повторно генерує 18 аналітичних Excel і запускає QA;
+5. створює новий immutable release та перемикає latest лише після успіху.
+
+Якщо змін немає, новий release не створюється. Якщо будь-який етап завершується
+помилкою, попередній latest release лишається активним і придатним до rollback.
+
+Початкове production-покоління можна скласти з уже завантажених локальних даних
+через `scripts/assemble_existing_baseline.py`, без повторного RAW ingestion, а
+потім явно опублікувати `scripts/publish_existing_generation.py`.

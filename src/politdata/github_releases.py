@@ -96,11 +96,12 @@ class GitHubReleaseClient:
     def _request(self, method, url, *, expected=(200,), **kwargs):
         headers = dict(self.headers)
         headers.update(kwargs.pop("headers", {}) or {})
+        timeout = kwargs.pop("timeout", 120)
         response = self.session.request(
             method,
             url,
             headers=headers,
-            timeout=120,
+            timeout=timeout,
             **kwargs,
         )
         if response.status_code not in expected:
@@ -228,6 +229,7 @@ class GitHubReleaseClient:
                 params={"name": asset_name},
                 headers={"Content-Type": content_type},
                 data=stream,
+                timeout=7200,
             )
         asset = response.json()
         expected = file_hash(path)
@@ -245,6 +247,7 @@ class GitHubReleaseClient:
             asset["url"],
             headers={"Accept": "application/octet-stream"},
             stream=True,
+            timeout=7200,
         )
         with destination.open("wb") as stream:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
