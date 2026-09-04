@@ -228,7 +228,7 @@ Materializer також атомарно приводить фрагменти �
   versioned package contract для запуску на чистій машині.
 - [x] Додати мінімальний offline full-replace fixture, який із підміненими лише
   API-відповідями проходить справжні normalization, materialization,
-  references, enrichment, QA та всі 18 Excel exports.
+  references, enrichment, QA та всі 17 Excel exports.
 - [x] Провести offline fixture через orchestrator promotion: перевірити
   generation manifest, checksums, атомарний `latest.json` і навмисний збій
   після повної трансформації без зміни активного покоління.

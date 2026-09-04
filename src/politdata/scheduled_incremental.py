@@ -123,7 +123,7 @@ def run_scheduled_incremental(
                 "payment_reference_identity_mismatches": int(
                     qa["payment_reference_identity"]["mismatches"].sum()
                 ),
-                "excel_workbooks": 18,
+                "excel_workbooks": 17,
             },
             metadata={
                 "previous_generation_id": current_id,

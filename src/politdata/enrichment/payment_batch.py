@@ -226,6 +226,13 @@ def derive_payment_enrichment(
             source_payment_type=
                 source_type,
 
+            internal_transfer=
+                _bool_value(
+                    row.get(
+                        "internal_transfer"
+                    )
+                ),
+
             organization_level=
                 _none_if_missing(
                     row.get(

@@ -389,3 +389,18 @@ def test_other_payment_type_is_not_reclassified():
         result.funding_source_analytical
         is None
     )
+
+
+def test_internal_monetary_contribution_becomes_other_income():
+
+    result = classify_payment(
+        source_payment_type="monetary_contributions",
+        internal_transfer=True,
+        organization_level="central",
+    )
+
+    assert result.analytical_payment_type == "other_incomes"
+    assert result.was_reclassified is True
+    assert result.reclassification_rule == (
+        "internal_monetary_contribution_treated_as_other_income"
+    )

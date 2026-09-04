@@ -22,7 +22,7 @@ def main(argv=None):
             "status": "passed",
             "enriched_regression": "passed",
             "payment_reference_identity_mismatches": 0,
-            "analytical_excel_workbooks": 18,
+            "analytical_excel_workbooks": 17,
             "analytical_excel_structure": "passed",
         },
     )

@@ -415,6 +415,7 @@ def classify_internal_transfer_funding_source(
 def classify_payment(
     *,
     source_payment_type: str,
+    internal_transfer: bool = False,
     organization_level=None,
     state_funding_account_confirmed: bool = False,
     state_funding_form_code=None,
@@ -427,6 +428,9 @@ def classify_payment(
 
     Rules
     -----
+    monetary_contributions + internal transfer:
+        -> analytical other_incomes
+
     state_funding:
         stays state_funding and receives its state funding form.
 
@@ -456,6 +460,23 @@ def classify_payment(
     state_form = _clean_optional_text(
         state_funding_form_code
     )
+
+    if source_type == "monetary_contributions" and internal_transfer:
+
+        return PaymentClassification(
+
+            analytical_payment_type=
+                "other_incomes",
+
+            was_reclassified=
+                True,
+
+            reclassification_rule=
+                "internal_monetary_contribution_treated_as_other_income",
+
+            funding_source_analytical=
+                None,
+        )
 
 
     # --------------------------------------------------------

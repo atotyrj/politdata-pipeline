@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Callable, Iterable, Iterator
 import os
 import re
-import unicodedata
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -44,13 +43,6 @@ REPORTING_MATRIX_FIXED_COLUMNS = (
     "first_report_period",
     "latest_report_period",
     "potential_annual_overlap",
-)
-
-
-REPORT_NAME_HISTORY_EXTRA_COLUMNS = (
-    "organization_name_as_reported",
-    "previous_organization_name_as_reported",
-    "organization_name_changed_since_previous_report",
 )
 
 
@@ -169,223 +161,6 @@ ADDRESS_FIELDS = (
 def _period_label(year, quarter) -> str:
     suffix = "annual" if int(quarter) == 5 else f"Q{int(quarter)}"
     return f"{int(year)} {suffix}"
-
-
-def _reported_name_key(value) -> str | None:
-    if value is None:
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
-    text = unicodedata.normalize("NFKC", str(value))
-    text = re.sub(r"[\u200b\u200c\u200d\u2060\ufeff]", "", text)
-    text = text.translate(
-        str.maketrans(
-            {
-                "«": "",
-                "»": "",
-                '"': "",
-                "„": "",
-                "“": "",
-                "”": "",
-                "‟": "",
-                "’": "'",
-                "ʼ": "'",
-                "`": "'",
-                "–": "-",
-                "—": "-",
-            }
-        )
-    )
-    text = re.sub(r"\s+", " ", text).strip()
-    return text.casefold() or None
-
-
-def _choose_reported_name(
-    rows: pd.DataFrame,
-    *,
-    group_columns: list[str],
-) -> pd.DataFrame:
-    """Choose a deterministic exact source spelling for each history key."""
-
-    if rows.empty:
-        return pd.DataFrame(columns=[*group_columns, "reported_name"])
-    working = rows.loc[
-        rows["_name_key"].notna(),
-        [*group_columns, "source__name", "_name_key", "_central", "_signed"],
-    ].copy()
-    if working.empty:
-        return pd.DataFrame(columns=[*group_columns, "reported_name"])
-
-    name_stats = (
-        working.groupby([*group_columns, "_name_key"], dropna=False)
-        .agg(
-            _occurrences=("source__name", "size"),
-            _central_occurrences=("_central", "sum"),
-            _latest_signed=("_signed", "max"),
-        )
-        .reset_index()
-    )
-    raw_stats = (
-        working.groupby(
-            [*group_columns, "_name_key", "source__name"],
-            dropna=False,
-        )
-        .agg(
-            _raw_occurrences=("source__name", "size"),
-            _raw_latest_signed=("_signed", "max"),
-        )
-        .reset_index()
-        .sort_values(
-            [
-                *group_columns,
-                "_name_key",
-                "_raw_occurrences",
-                "_raw_latest_signed",
-                "source__name",
-            ],
-            ascending=[True] * (len(group_columns) + 1) + [False, False, True],
-            na_position="first",
-            kind="stable",
-        )
-        .drop_duplicates([*group_columns, "_name_key"], keep="first")
-    )
-    winners = (
-        name_stats.merge(
-            raw_stats[[*group_columns, "_name_key", "source__name"]],
-            on=[*group_columns, "_name_key"],
-            how="left",
-            validate="one_to_one",
-        )
-        .sort_values(
-            [
-                *group_columns,
-                "_occurrences",
-                "_central_occurrences",
-                "_latest_signed",
-                "_name_key",
-            ],
-            ascending=[True] * len(group_columns) + [False, False, False, True],
-            na_position="first",
-            kind="stable",
-        )
-        .drop_duplicates(group_columns, keep="first")
-        .rename(columns={"source__name": "reported_name"})
-    )
-    return winners[[*group_columns, "reported_name"]].reset_index(drop=True)
-
-
-def _reported_name_observations(
-    report_context: pd.DataFrame,
-    report_organizations: pd.DataFrame,
-    report_regional_offices: pd.DataFrame,
-) -> pd.DataFrame:
-    """Resolve exact reported spellings without reading RAW report files."""
-
-    context = report_context.copy()
-    context["_code_key"] = context["organization_code"].astype("string").str.strip()
-    context["_signed"] = pd.to_datetime(
-        context.get("signed_date_dt", context.get("signed_date")),
-        errors="coerce",
-    )
-    source_meta = context[
-        ["source_report_id", "organization_level", "_signed"]
-    ].rename(columns={"organization_level": "_source_level"})
-
-    source_frames = []
-    for frame in (report_organizations, report_regional_offices):
-        required = {
-            "source_report_id",
-            "root_party_id",
-            "report_year",
-            "report_quarter",
-            "source__code",
-            "source__name",
-        }
-        missing = required - set(frame.columns)
-        if missing:
-            raise KeyError(f"report-state names missing columns: {sorted(missing)}")
-        source_frames.append(frame.loc[:, list(required)].copy())
-    source = pd.concat(source_frames, ignore_index=True)
-    source["_code_key"] = source["source__code"].astype("string").str.strip()
-    source["_name_key"] = source["source__name"].map(_reported_name_key)
-    source = source.loc[source["_code_key"].notna() & source["_name_key"].notna()]
-    source = source.merge(
-        source_meta,
-        on="source_report_id",
-        how="left",
-        validate="many_to_one",
-        sort=False,
-    )
-    source["_central"] = source["_source_level"].eq("central").astype(int)
-
-    general_keys = [
-        "root_party_id",
-        "_code_key",
-        "report_year",
-        "report_quarter",
-    ]
-    general = _choose_reported_name(source, group_columns=general_keys)
-
-    direct_targets = context[
-        ["source_report_id", "organization_id", "_code_key"]
-    ].rename(columns={"_code_key": "_target_code_key"})
-    direct_rows = source.merge(
-        direct_targets,
-        on="source_report_id",
-        how="inner",
-        validate="many_to_one",
-    )
-    direct_rows = direct_rows.loc[
-        direct_rows["_code_key"].eq(direct_rows["_target_code_key"])
-    ]
-    direct = _choose_reported_name(
-        direct_rows,
-        group_columns=["source_report_id"],
-    ).rename(columns={"reported_name": "_direct_reported_name"})
-
-    observations = context[
-        [
-            "source_report_id",
-            "organization_id",
-            "root_party_id",
-            "year",
-            "quarter",
-            "_code_key",
-        ]
-    ].merge(
-        general,
-        left_on=["root_party_id", "_code_key", "year", "quarter"],
-        right_on=general_keys,
-        how="left",
-        validate="many_to_one",
-        sort=False,
-    )
-    observations = observations.merge(
-        direct,
-        on="source_report_id",
-        how="left",
-        validate="one_to_one",
-        sort=False,
-    )
-    observations["reported_name"] = observations[
-        "_direct_reported_name"
-    ].combine_first(observations["reported_name"])
-    observations["_name_key"] = observations["reported_name"].map(
-        _reported_name_key
-    )
-    return observations[
-        [
-            "source_report_id",
-            "organization_id",
-            "year",
-            "quarter",
-            "reported_name",
-            "_name_key",
-        ]
-    ]
 
 
 def build_reporting_organization_matrix(
@@ -522,71 +297,6 @@ def build_reporting_organization_matrix(
     ).reset_index(drop=True)
     ordered = [*REPORTING_MATRIX_FIXED_COLUMNS, *period_columns]
     return result.loc[:, ordered]
-
-
-def build_organization_report_name_history(
-    report_context: pd.DataFrame,
-    report_organizations: pd.DataFrame,
-    report_regional_offices: pd.DataFrame,
-) -> pd.DataFrame:
-    """Build one selected-report row with adjacent-report name comparisons."""
-
-    context = report_context.copy()
-    helpers = build_report_context(context)
-    observations = _reported_name_observations(
-        context,
-        report_organizations,
-        report_regional_offices,
-    )
-    if observations["source_report_id"].duplicated().any():
-        raise ValueError("Reported-name observations must be unique per report")
-
-    history = helpers.merge(
-        observations[["source_report_id", "reported_name", "_name_key"]],
-        on="source_report_id",
-        how="left",
-        validate="one_to_one",
-        sort=False,
-    ).merge(
-        context[["source_report_id", "year", "quarter"]],
-        on="source_report_id",
-        how="left",
-        validate="one_to_one",
-        sort=False,
-    )
-    history = history.sort_values(
-        ["organization_id", "year", "quarter", "source_report_id"],
-        kind="stable",
-    )
-    history["previous_organization_name_as_reported"] = history.groupby(
-        "organization_id", sort=False
-    )["reported_name"].shift()
-    previous_key = history.groupby("organization_id", sort=False)["_name_key"].shift()
-    comparable = previous_key.notna() & history["_name_key"].notna()
-    history["organization_name_changed_since_previous_report"] = pd.Series(
-        pd.NA,
-        index=history.index,
-        dtype="Int64",
-    )
-    history.loc[comparable, "organization_name_changed_since_previous_report"] = (
-        history.loc[comparable, "_name_key"].ne(previous_key.loc[comparable]).astype(int)
-    )
-    history = history.rename(columns={"reported_name": "organization_name_as_reported"})
-    history = history.sort_values(
-        [
-            "party_name",
-            "party_code",
-            "organization_type",
-            "region",
-            "organization_name",
-            "organization_code",
-            "report_year",
-            "report_period",
-        ],
-        na_position="last",
-        kind="stable",
-    ).reset_index(drop=True)
-    return history.loc[:, [*HELPER_COLUMNS, *REPORT_NAME_HISTORY_EXTRA_COLUMNS]]
 
 
 def build_report_context(report_context: pd.DataFrame) -> pd.DataFrame:
@@ -739,9 +449,14 @@ def transform_payment_batch(
 ) -> pd.DataFrame:
     """Create one source-shaped payment table using only final clean values."""
 
-    selected = frame.loc[
-        frame["analytical_payment_type"].eq(analytical_payment_type)
-    ].copy()
+    routing_type = frame["analytical_payment_type"].astype("string").copy()
+    if "internal_transfer" in frame.columns:
+        internal_monetary = (
+            frame["internal_transfer"].fillna(False).astype(bool)
+            & routing_type.eq("monetary_contributions")
+        )
+        routing_type.loc[internal_monetary] = "other_incomes"
+    selected = frame.loc[routing_type.eq(analytical_payment_type)].copy()
     merged = _with_context(selected, context)
     result = merged.loc[:, list(HELPER_COLUMNS)].copy()
     for source_column, output_column in PAYMENT_FIELD_MAP:
@@ -1055,9 +770,12 @@ def _payment_batch_factory(
     sources = [enriched_root / "payments" / f"{payment_type}.parquet"]
     if payment_type == "outgoing_expenses":
         sources.insert(0, enriched_root / "payments" / "budget_expenses.parquet")
+    elif payment_type == "other_incomes":
+        sources.insert(0, enriched_root / "payments" / "monetary_contributions.parquet")
     requested = [
         "source_report_id",
         "analytical_payment_type",
+        "internal_transfer",
         *(source for source, _ in PAYMENT_FIELD_MAP),
     ]
 
@@ -1079,7 +797,7 @@ def export_analytical_workbooks(
     output_dir: Path,
     progress: Callable[[str], None] | None = None,
 ) -> list[dict]:
-    """Create all 18 numbered single-sheet analytical workbooks."""
+    """Create all 17 numbered single-sheet analytical workbooks."""
 
     progress = progress or (lambda message: None)
     raw_context = pd.read_parquet(enriched_root / "reference" / "report_context.parquet")
@@ -1148,27 +866,6 @@ def export_analytical_workbooks(
             "file": reporting_path.name,
             "rows": rows,
             "columns": len(reporting_matrix.columns),
-        }
-    )
-
-    report_name_history = build_organization_report_name_history(
-        raw_context,
-        pd.read_parquet(enriched_root / "report_state" / "organizations.parquet"),
-        pd.read_parquet(enriched_root / "report_state" / "regional_offices.parquet"),
-    )
-    history_path = output_dir / "18_organizations__report_name_history.xlsx"
-    progress(f"writing {history_path.name}")
-    rows = _write_workbook(
-        history_path,
-        "organization_report_names",
-        report_name_history.columns.tolist(),
-        [report_name_history],
-    )
-    summary.append(
-        {
-            "file": history_path.name,
-            "rows": rows,
-            "columns": len(report_name_history.columns),
         }
     )
 

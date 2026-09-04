@@ -23,14 +23,13 @@ Local development project for downloading, cleaning, enriching, transforming, va
 | [08_payments__other_contributions.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/08_payments__other_contributions.xlsx) | Негрошові внески майном, роботами або послугами. |
 | [09_payments__monetary_contributions.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/09_payments__monetary_contributions.xlsx) | Приватні грошові внески фізичних та юридичних осіб. |
 | [10_payments__state_funding.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/10_payments__state_funding.xlsx) | Надходження коштів державного фінансування. |
-| [11_payments__other_incomes.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/11_payments__other_incomes.xlsx) | Інші надходження, які не належать до внесків або державного фінансування. |
+| [11_payments__other_incomes.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/11_payments__other_incomes.xlsx) | Інші надходження та внутрішньопартійні перерахування, які не є приватними внесками або державним фінансуванням. |
 | [12_payments__budget_expenses.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/12_payments__budget_expenses.xlsx) | Витрати коштів державного фінансування. |
 | [13_payments__outgoing_expenses.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/13_payments__outgoing_expenses.xlsx) | Інші вихідні платежі та витрати приватних коштів, включно з аналітично перекласифікованими операціями. |
 | [14_payments__return_expenses.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/14_payments__return_expenses.xlsx) | Повернення помилкових або інших надходжень. |
 | [15_payments__transfer_expenses.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/15_payments__transfer_expenses.xlsx) | Перекази коштів між рахунками та внутрішньопартійні трансфери цього типу. |
 | [16_obligations__obligations.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/16_obligations__obligations.xlsx) | Фінансові зобов'язання партій і осередків. |
 | [17_organizations__reporting_history.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/17_organizations__reporting_history.xlsx) | Матриця наявності відібраних звітів за організаціями та звітними періодами. |
-| [18_organizations__report_name_history.xlsx](https://github.com/atotyrj/politdata-pipeline/releases/latest/download/18_organizations__report_name_history.xlsx) | Хронологія назв організації у послідовних звітах і позначки їх зміни. |
 
 Повний список поколінь і службові архіви для відновлення доступні у розділі
 [`Releases`](https://github.com/atotyrj/politdata-pipeline/releases).

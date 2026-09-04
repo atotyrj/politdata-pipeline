@@ -1,0 +1,49 @@
+name: Republish current Excel contract
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: politdata-release-writer
+  cancel-in-progress: false
+
+jobs:
+  republish:
+    name: Restore, rebuild Excel, publish and remove obsolete generation
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      GENERATION_ID: contract-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install project
+        run: python -m pip install --upgrade pip && python -m pip install -e .
+
+      - name: Republish current generation without obsolete workbook
+        run: >-
+          python scripts/republish_current_contract.py
+          --repository "$GITHUB_REPOSITORY"
+          --work-root "$RUNNER_TEMP/politdata-generation"
+          --generation-id "$GENERATION_ID"
+          --code-revision "$GITHUB_SHA"
+          --delete-previous
+
+      - name: Write summary
+        if: ${{ always() }}
+        run: |
+          echo "## PolitData output-contract republication" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Excel workbooks: 17" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Obsolete report-name-history workbook: removed" >> "$GITHUB_STEP_SUMMARY"

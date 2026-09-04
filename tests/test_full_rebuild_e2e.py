@@ -201,8 +201,8 @@ def test_full_replace_real_transforms_from_fixture_to_enrichment(tmp_path, monke
     assert (paths.processed_dir / "properties" / "realty.parquet").exists()
     assert (paths.interim_dir / "normalized" / "properties" / "paper.parquet").exists()
     if excel_available:
-        assert len(result["artifact_locations"]["excel_workbooks"]) == 18
-        assert len(list(paths.outputs_dir.glob("*.xlsx"))) == 18
+        assert len(result["artifact_locations"]["excel_workbooks"]) == 17
+        assert len(list(paths.outputs_dir.glob("*.xlsx"))) == 17
 
 
 def test_full_fixture_publishes_generation_manifest_and_latest(tmp_path, monkeypatch):

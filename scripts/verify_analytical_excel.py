@@ -14,7 +14,6 @@ import pyarrow.parquet as pq
 from politdata.analytical_excel import (
     HELPER_COLUMNS,
     PAYMENT_OUTPUTS,
-    REPORT_NAME_HISTORY_EXTRA_COLUMNS,
     REPORT_OUTPUTS,
     REPORTING_MATRIX_FIXED_COLUMNS,
 )
@@ -38,7 +37,6 @@ def _expected_rows(enriched_root: Path) -> dict[str, int]:
     expected["17_organizations__reporting_history.xlsx"] = int(
         report_context["organization_id"].nunique()
     )
-    expected["18_organizations__report_name_history.xlsx"] = int(len(report_context))
     for number, group, section in REPORT_OUTPUTS:
         expected[f"{number}_{group}__{section}.xlsx"] = pq.ParquetFile(
             enriched_root / group / f"{section}.parquet"
@@ -46,8 +44,17 @@ def _expected_rows(enriched_root: Path) -> dict[str, int]:
 
     payment_counts = {section: 0 for _, section in PAYMENT_OUTPUTS}
     for path in (enriched_root / "payments").glob("*.parquet"):
-        frame = pd.read_parquet(path, columns=["analytical_payment_type"])
-        counts = frame["analytical_payment_type"].value_counts()
+        frame = pd.read_parquet(
+            path,
+            columns=["analytical_payment_type", "internal_transfer"],
+        )
+        routing_type = frame["analytical_payment_type"].astype("string").copy()
+        internal_monetary = (
+            frame["internal_transfer"].fillna(False).astype(bool)
+            & routing_type.eq("monetary_contributions")
+        )
+        routing_type.loc[internal_monetary] = "other_incomes"
+        counts = routing_type.value_counts()
         for section, count in counts.items():
             payment_counts[str(section)] += int(count)
     for number, section in PAYMENT_OUTPUTS:
@@ -151,8 +158,6 @@ def verify_directory(output_dir: Path, enriched_root: Path) -> list[dict]:
             )
         if filename == "17_organizations__reporting_history.xlsx":
             expected_fixed = REPORTING_MATRIX_FIXED_COLUMNS
-        elif filename == "18_organizations__report_name_history.xlsx":
-            expected_fixed = (*HELPER_COLUMNS, *REPORT_NAME_HISTORY_EXTRA_COLUMNS)
         else:
             expected_fixed = HELPER_COLUMNS
         if tuple(headers[: len(expected_fixed)]) != expected_fixed:

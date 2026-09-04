@@ -4,10 +4,8 @@ import pandas as pd
 
 from politdata.analytical_excel import (
     HELPER_COLUMNS,
-    REPORT_NAME_HISTORY_EXTRA_COLUMNS,
     REPORTING_MATRIX_FIXED_COLUMNS,
     build_party_information,
-    build_organization_report_name_history,
     build_report_context,
     build_reporting_organization_matrix,
     transform_payment_batch,
@@ -130,6 +128,35 @@ def test_payment_uses_clean_values_and_analytical_section_and_types():
     assert "payer_name_source" not in result.columns
     assert "payment_amount_raw" not in result.columns
     assert "analytical_payment_type" not in result.columns
+
+
+def test_internal_monetary_transfer_is_routed_only_to_other_incomes():
+    context = build_report_context(report_context_frame()).iloc[[1]]
+    source = pd.DataFrame(
+        [
+            {
+                "source_report_id": "quarter",
+                "analytical_payment_type": "monetary_contributions",
+                "internal_transfer": True,
+                "payment_amount": 25.0,
+            }
+        ]
+    )
+
+    monetary = transform_payment_batch(
+        source,
+        context,
+        analytical_payment_type="monetary_contributions",
+    )
+    other_income = transform_payment_batch(
+        source,
+        context,
+        analytical_payment_type="other_incomes",
+    )
+
+    assert monetary.empty
+    assert len(other_income) == 1
+    assert other_income.loc[0, "payment_amount"] == 25.0
 
 
 def test_party_information_repeats_current_contact_data_per_report():
@@ -273,53 +300,6 @@ def test_reporting_matrix_and_report_level_name_history():
             },
         ]
     )
-    empty_organizations = pd.DataFrame(
-        columns=[
-            "source_report_id",
-            "root_party_id",
-            "report_year",
-            "report_quarter",
-            "source__code",
-            "source__name",
-        ]
-    )
-    regional_offices = pd.DataFrame(
-        [
-            {
-                "source_report_id": "r1",
-                "root_party_id": "party-1",
-                "report_year": 2023,
-                "report_quarter": 1,
-                "source__code": "111",
-                "source__name": "OLD OFFICE NAME",
-            },
-            {
-                "source_report_id": "party-r1",
-                "root_party_id": "party-1",
-                "report_year": 2023,
-                "report_quarter": 1,
-                "source__code": "111",
-                "source__name": "OLD OFFICE NAME",
-            },
-            {
-                "source_report_id": "r2",
-                "root_party_id": "party-1",
-                "report_year": 2023,
-                "report_quarter": 2,
-                "source__code": "111",
-                "source__name": '"NEW OFFICE NAME"',
-            },
-            {
-                "source_report_id": "r3",
-                "root_party_id": "party-1",
-                "report_year": 2023,
-                "report_quarter": 3,
-                "source__code": "111",
-                "source__name": "«New Office Name»",
-            },
-        ]
-    )
-
     result = build_reporting_organization_matrix(
         context,
         reference,
@@ -341,41 +321,3 @@ def test_reporting_matrix_and_report_level_name_history():
     assert central["potential_annual_overlap"] == 1
     assert central["2023 Q1"] == 1
     assert central["2023 annual"] == 1
-
-    history_context = context.merge(
-        reference[
-            [
-                "organization_id",
-                "organization_name_current",
-                "party_name_current",
-                "party_code",
-                "region",
-            ]
-        ],
-        on="organization_id",
-        how="left",
-        validate="many_to_one",
-    )
-    history_context["data_recency_status"] = "historical_data"
-    history = build_organization_report_name_history(
-        history_context,
-        empty_organizations,
-        regional_offices,
-    )
-    assert tuple(history.columns[-len(REPORT_NAME_HISTORY_EXTRA_COLUMNS) :]) == (
-        REPORT_NAME_HISTORY_EXTRA_COLUMNS
-    )
-    office_history = history.loc[history["organization_code"].eq("111")]
-    assert office_history["organization_name_as_reported"].tolist() == [
-        "OLD OFFICE NAME",
-        '"NEW OFFICE NAME"',
-        "«New Office Name»",
-    ]
-    assert office_history["previous_organization_name_as_reported"].iloc[1] == (
-        "OLD OFFICE NAME"
-    )
-    assert pd.isna(
-        office_history.iloc[0]["organization_name_changed_since_previous_report"]
-    )
-    assert office_history.iloc[1]["organization_name_changed_since_previous_report"] == 1
-    assert office_history.iloc[2]["organization_name_changed_since_previous_report"] == 0
