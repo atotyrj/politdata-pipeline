@@ -42,6 +42,91 @@ def test_person_name_fop_prefix():
     )
 
 
+def test_person_name_removes_fop_suffix_and_outer_punctuation():
+
+    assert (
+        normalize_person_name(
+            "ЧИГРИН АННА ОЛЕКСАНДРІВНА, ФОП.",
+            "Фізична особа",
+        )
+        ==
+        "Чигрин Анна Олександрівна"
+    )
+
+
+def test_person_name_removes_full_fop_label_at_either_edge():
+
+    assert (
+        normalize_person_name(
+            "Фізична особа-підприємець ІВАХІНА СВІТЛАНА МИКОЛАЇВНА "
+            "фізична особа-підприємець",
+            "Фізична особа",
+        )
+        ==
+        "Івахіна Світлана Миколаївна"
+    )
+
+
+def test_person_name_removes_observed_malformed_fop_label():
+
+    assert (
+        normalize_person_name(
+            "ФІЗИЧНА ОСОБО-ПІДПРИЄМЕЦЬ ЦЮРА НАТАЛІЯ МИКОЛАЇВНА",
+            "Фізична особа",
+        )
+        ==
+        "Цюра Наталія Миколаївна"
+    )
+
+
+def test_person_name_removes_professional_roles_at_either_edge():
+
+    assert (
+        normalize_person_name(
+            "ПРИВАТНИЙ НОТАРІУС КОПАЧ ЮЛІЯ ОЛЕГІВНА, адвокат",
+            "Фізична особа",
+        )
+        ==
+        "Копач Юлія Олегівна"
+    )
+
+
+def test_person_name_removes_notary_district_suffix():
+
+    assert (
+        normalize_person_name(
+            "КЛІМОВА Н. В. ПРИВАТНИЙ НОТАРІУС КИЇВ.МІСЬК.НОТ.ОКРУГ",
+            "Фізична особа",
+        )
+        ==
+        "Клімова Н. В."
+    )
+
+
+def test_explicit_fop_label_is_cleaned_despite_wrong_source_type():
+
+    assert (
+        normalize_person_name(
+            "ФОП Карнаушенко М. В.",
+            "Юридична особа",
+        )
+        ==
+        "Карнаушенко М. В."
+    )
+
+
+def test_legal_name_with_fop_letters_is_unchanged():
+
+    assert (
+        normalize_person_name(
+            'ТОВ "ПРОФОПТІМАСОЛЮШНЗ"',
+            "Юридична особа",
+        )
+        ==
+        'ТОВ "ПРОФОПТІМАСОЛЮШНЗ"'
+    )
+
+
 def test_person_name_latin_homoglyph():
 
     result = normalize_person_name(
@@ -85,7 +170,19 @@ def test_person_name_handles_quotes_and_initials():
             "Фізична особа",
         )
         ==
-        '"Іваненко І. І."'
+        "Іваненко І. І."
+    )
+
+
+def test_person_name_normalizes_double_quotes_as_apostrophe():
+
+    assert (
+        normalize_person_name(
+            'Дерев""янко В.А.',
+            "Фізична особа",
+        )
+        ==
+        "Дерев'янко В. А."
     )
 
 

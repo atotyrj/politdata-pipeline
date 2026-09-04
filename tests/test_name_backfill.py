@@ -44,6 +44,28 @@ def test_standardizes_only_normalized_person_names():
     assert stats["payer_name_normalized"]["changed_rows"] == 1
 
 
+def test_standardizes_explicit_fop_when_source_type_is_wrong():
+
+    before = pd.DataFrame(
+        [
+            {
+                "payer_name_source": "ФОП Карнаушенко М. В.",
+                "payer_name_normalized": "ФОП Карнаушенко М. В.",
+                "payer_type_normalized": "Юридична особа",
+                "receiver_name_source": "ТОВ ТЕСТ",
+                "receiver_name_normalized": "ТОВ ТЕСТ",
+                "receiver_type_normalized": "Юридична особа",
+            }
+        ]
+    )
+
+    after, stats = standardize_person_names(before)
+
+    assert after.loc[0, "payer_name_normalized"] == "Карнаушенко М. В."
+    assert after.loc[0, "payer_type_normalized"] == "Юридична особа"
+    assert stats["payer_name_normalized"]["explicit_fop_rows"] == 1
+
+
 def test_validation_rejects_any_other_column_change():
     before = _frame()
     after = before.copy()

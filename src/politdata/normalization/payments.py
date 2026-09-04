@@ -20,7 +20,7 @@ from politdata.normalization.accounts import (
 )
 
 
-NORMALIZATION_VERSION = "payments_v0_2"
+NORMALIZATION_VERSION = "payments_v0_3"
 
 
 # ============================================================
@@ -256,17 +256,103 @@ LATIN_HOMOGLYPHS = str.maketrans(
 )
 
 
-FOP_PREFIX_RE = re.compile(
-    r"""^\s*
+FOP_LABEL = r"""
+    (?<![^\W\d_])
     (?:
-        фоп
+        ф\.?\s*о\.?\s*п\.?
         |
-        фізична\s+особа[\s\-–—]*підприємець
+        фізичн(?:а|о)?\s+
+        особ(?:а|о|оба)?\s*[\-–—]?\s*
+        підприєм(?:ець|ець|ць|нць|ец)
     )
-    [\s:,\-–—]*
-    """,
+    (?![^\W\d_])
+"""
+
+
+PERSON_ROLE_LABEL = r"""
+    (?:
+        при[іи]?ватн\w*\s+нотаріус\w*
+        (?:\s+київ\.?\s*міськ\.?\s*нот\.?\s*округ\w*)?
+        |
+        нотаріус\w*
+        |
+        адвокат\w*
+    )
+"""
+
+
+EDGE_PUNCTUATION = r'[\s"«»„“”(),;:–—-]*'
+
+
+FOP_LABEL_RE = re.compile(
+    FOP_LABEL,
     flags=re.I | re.X,
 )
+
+
+PERSON_PREFIX_LABEL_RE = re.compile(
+    rf"^\s*{EDGE_PUNCTUATION}(?:{FOP_LABEL}|{PERSON_ROLE_LABEL}){EDGE_PUNCTUATION}",
+    flags=re.I | re.X,
+)
+
+
+PERSON_SUFFIX_LABEL_RE = re.compile(
+    rf"{EDGE_PUNCTUATION}(?:{FOP_LABEL}|{PERSON_ROLE_LABEL}){EDGE_PUNCTUATION}$",
+    flags=re.I | re.X,
+)
+
+
+APOSTROPHE_BETWEEN_LETTERS_RE = re.compile(
+    r'(?<=[^\W\d_])(?:"{1,2}|[“”„`’‘]|\'{1,2})(?=[^\W\d_])',
+    flags=re.UNICODE,
+)
+
+
+LEGAL_ENTITY_TOKENS = {
+    "тов",
+    "пп",
+    "пат",
+    "прат",
+    "ат",
+    "кп",
+    "дп",
+    "банк",
+}
+
+
+def _strip_outer_person_punctuation(text: str) -> str:
+    """Remove wrapper punctuation while retaining periods in initials."""
+
+    text = text.strip(' \t\r\n"«»„“”(),;:–—-')
+    if text.endswith(".") and not re.search(
+        r"(?:^|\s)(?:[^\W\d_]\.\s*)+$",
+        text,
+        flags=re.UNICODE,
+    ):
+        text = text[:-1].rstrip()
+    return text
+
+
+def _strip_person_edge_labels(text: str) -> str:
+    """Remove repeated FOP/professional labels only at the string edges."""
+
+    text = _strip_outer_person_punctuation(text)
+    while True:
+        cleaned = PERSON_PREFIX_LABEL_RE.sub("", text)
+        cleaned = PERSON_SUFFIX_LABEL_RE.sub("", cleaned)
+        cleaned = _strip_outer_person_punctuation(cleaned)
+        if cleaned == text:
+            return cleaned
+        text = cleaned
+
+
+def _looks_like_person_name(text: str) -> bool:
+    """Guard FOP cleanup when the source type incorrectly says legal entity."""
+
+    tokens = re.findall(r"[^\W\d_]+", text, flags=re.UNICODE)
+    if not 2 <= len(tokens) <= 4:
+        return False
+    return not any(token.casefold() in LEGAL_ENTITY_TOKENS for token in tokens)
 
 
 def normalize_person_name(
@@ -279,15 +365,20 @@ def normalize_person_name(
     if text is None:
         return None
 
-    # Only apply person-specific transformations
-    # to rows analytically recognized as natural persons.
-    if counterparty_type != "Фізична особа":
+    is_person = counterparty_type == "Фізична особа"
+    has_fop_label = FOP_LABEL_RE.search(text) is not None
+
+    # Source type is occasionally wrong for a sole proprietor.  Clean an
+    # explicit FOP label only when the remainder is plausibly a personal name;
+    # all other non-person names stay untouched.
+    if not is_person and not has_fop_label:
         return text
 
-    text = FOP_PREFIX_RE.sub(
-        "",
-        text,
-    )
+    text = APOSTROPHE_BETWEEN_LETTERS_RE.sub("'", text)
+    cleaned = _strip_person_edge_labels(text)
+    if not is_person and not _looks_like_person_name(cleaned):
+        return text
+    text = cleaned
 
     # Old exploratory notebooks showed recurring
     # Latin homoglyphs inside Cyrillic personal names.

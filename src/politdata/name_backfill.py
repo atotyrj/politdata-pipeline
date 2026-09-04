@@ -13,6 +13,7 @@ from pandas.testing import assert_frame_equal
 from .normalization.payments import (
     NORMALIZATION_VERSION,
     PAYMENT_PATHS,
+    FOP_LABEL_RE,
     normalize_person_name,
 )
 
@@ -24,7 +25,7 @@ TARGETS = {
 
 
 def standardize_person_names(frame: pd.DataFrame):
-    """Return a copy with canonical casing only for natural persons."""
+    """Return a copy with canonical names and explicit FOP cleanup."""
 
     required = set(TARGETS) | set(TARGETS.values())
     missing = required - set(frame.columns)
@@ -35,26 +36,41 @@ def standardize_person_names(frame: pd.DataFrame):
     stats = {}
     for name_column, type_column in TARGETS.items():
         person_mask = result[type_column].eq("Фізична особа")
-        source = result.loc[person_mask, name_column]
-        unique_names = source.dropna().astype(str).unique()
-        mapping = {
-            value: normalize_person_name(value, "Фізична особа")
-            for value in unique_names
-        }
         before = result[name_column].copy()
-        result.loc[person_mask, name_column] = source.map(
-            lambda value: mapping.get(str(value)) if pd.notna(value) else value
+        fop_mask = (
+            result[name_column]
+            .fillna("")
+            .astype(str)
+            .map(lambda value: FOP_LABEL_RE.search(value) is not None)
         )
+        eligible_mask = person_mask | fop_mask
+        changed_unique_values = 0
+        for counterparty_type, indexes in (
+            result.loc[eligible_mask]
+            .groupby(type_column, dropna=False)
+            .groups.items()
+        ):
+            source = result.loc[indexes, name_column]
+            unique_names = source.dropna().astype(str).unique()
+            mapping = {
+                value: normalize_person_name(value, counterparty_type)
+                for value in unique_names
+            }
+            result.loc[indexes, name_column] = source.map(
+                lambda value: mapping.get(str(value)) if pd.notna(value) else value
+            )
+            changed_unique_values += sum(
+                new != old for old, new in mapping.items()
+            )
         stats[name_column] = {
             "person_rows": int(person_mask.sum()),
+            "explicit_fop_rows": int((fop_mask & ~person_mask).sum()),
             "changed_rows": int(
                 (~before.fillna("<NULL>").eq(
                     result[name_column].fillna("<NULL>")
                 )).sum()
             ),
-            "changed_unique_values": int(
-                sum(new != old for old, new in mapping.items())
-            ),
+            "changed_unique_values": int(changed_unique_values),
         }
 
     validate_name_backfill(frame, result)
@@ -80,18 +96,29 @@ def validate_name_backfill(before: pd.DataFrame, after: pd.DataFrame):
     )
 
     for name_column, type_column in TARGETS.items():
-        non_person = ~before[type_column].eq("Фізична особа")
-        if not before.loc[non_person, name_column].equals(
-            after.loc[non_person, name_column]
-        ):
-            raise ValueError(
-                f"Backfill changed non-person values in {name_column}."
-            )
-        person = before[type_column].eq("Фізична особа")
-        expected = after.loc[person, name_column].map(
-            lambda value: normalize_person_name(value, "Фізична особа")
+        expected = before[name_column].copy()
+        person_mask = before[type_column].eq("Фізична особа")
+        fop_mask = (
+            before[name_column]
+            .fillna("")
+            .astype(str)
+            .map(lambda value: FOP_LABEL_RE.search(value) is not None)
         )
-        if not expected.equals(after.loc[person, name_column]):
+        eligible_mask = person_mask | fop_mask
+        for counterparty_type, indexes in (
+            before.loc[eligible_mask]
+            .groupby(type_column, dropna=False)
+            .groups.items()
+        ):
+            source = before.loc[indexes, name_column]
+            mapping = {
+                value: normalize_person_name(value, counterparty_type)
+                for value in source.dropna().astype(str).unique()
+            }
+            expected.loc[indexes] = source.map(
+                lambda value: mapping.get(str(value)) if pd.notna(value) else value
+            )
+        if not expected.equals(after[name_column]):
             raise ValueError(
                 f"Backfill left non-canonical values in {name_column}."
             )
