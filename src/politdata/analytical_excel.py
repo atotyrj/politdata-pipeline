@@ -16,6 +16,10 @@ import re
 import pandas as pd
 import pyarrow.parquet as pq
 
+from politdata.expense_classification import (
+    EXPENSE_CATEGORY_COLUMN,
+    classify_expense_categories,
+)
 from politdata.normalization.payments import normalize_person_name
 
 
@@ -462,6 +466,8 @@ def transform_payment_batch(
     for source_column, output_column in PAYMENT_FIELD_MAP:
         if source_column in merged.columns:
             result[output_column] = merged[source_column]
+    if analytical_payment_type in {"budget_expenses", "outgoing_expenses"}:
+        result[EXPENSE_CATEGORY_COLUMN] = classify_expense_categories(result)
     return _apply_display_types(result)
 
 

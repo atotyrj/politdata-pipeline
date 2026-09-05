@@ -11,6 +11,7 @@ from politdata.analytical_excel import (
     transform_payment_batch,
     transform_report_section_batch,
 )
+from politdata.expense_classification import EXPENSE_CATEGORY_COLUMN
 
 
 def report_context_frame():
@@ -124,10 +125,39 @@ def test_payment_uses_clean_values_and_analytical_section_and_types():
     assert result.loc[0, "payer_name"] == "Платник"
     assert result.loc[0, "payer_type"] == "Фізична особа"
     assert result.loc[0, "receiver_type"] == "internal_party_transfer"
+    assert (
+        result.loc[0, EXPENSE_CATEGORY_COLUMN]
+        == "Внутрішньопартійний трансфер"
+    )
     assert result.loc[0, "payment_amount"] == 10.2
     assert "payer_name_source" not in result.columns
     assert "payment_amount_raw" not in result.columns
     assert "analytical_payment_type" not in result.columns
+
+
+def test_expense_category_is_added_only_to_expense_exports():
+    context = build_report_context(report_context_frame()).iloc[[1]]
+    base = {
+        "source_report_id": "quarter",
+        "source_row_id": "payment-1",
+        "receiver_type_analytical": "Юридична особа",
+        "payment_purpose": "Оренда нежитлового приміщення",
+        "payment_reason": "Договір оренди",
+    }
+
+    expense = transform_payment_batch(
+        pd.DataFrame([{**base, "analytical_payment_type": "outgoing_expenses"}]),
+        context,
+        analytical_payment_type="outgoing_expenses",
+    )
+    income = transform_payment_batch(
+        pd.DataFrame([{**base, "analytical_payment_type": "state_funding"}]),
+        context,
+        analytical_payment_type="state_funding",
+    )
+
+    assert expense.loc[0, EXPENSE_CATEGORY_COLUMN] == "Оренда"
+    assert EXPENSE_CATEGORY_COLUMN not in income.columns
 
 
 def test_internal_monetary_transfer_is_routed_only_to_other_incomes():
