@@ -23,9 +23,11 @@ DEFAULT_ALL_REPORTS_PATH = "data/interim/reports/all_reports_manifest.parquet"
 def run_limited_organization_ingestion(
     *,
     organization_limit,
+    organization_all=False,
     change_set_path=DEFAULT_CURRENT_CHANGE_SET_PATH,
     run_downstream=True,
     report_limit=None,
+    report_details_all_pending=False,
     report_discovery_limit=None,
     report_discovery_all_due=False,
     report_refresh_interval_days=DEFAULT_REFRESH_INTERVAL_DAYS,
@@ -38,29 +40,41 @@ def run_limited_organization_ingestion(
     card changes, so a new report from an unchanged party is still discoverable.
     """
 
-    organization_limit = int(organization_limit)
-    if organization_limit <= 0:
-        raise ValueError("organization_limit must be positive.")
+    if organization_all and organization_limit is not None:
+        raise ValueError("Pass either organization_limit or organization_all.")
+    if not organization_all:
+        organization_limit = int(organization_limit)
+        if organization_limit <= 0:
+            raise ValueError("organization_limit must be positive.")
 
     options = dict(sync_options or {})
     if "candidate_limit" in options:
         raise ValueError("Pass organization_limit, not sync_options.candidate_limit.")
     if "change_set_path" in options:
         raise ValueError("Pass change_set_path directly.")
+    if "refresh_all_organizations" in options:
+        raise ValueError(
+            "Pass organization_all, not sync_options.refresh_all_organizations."
+        )
 
-    sync = run_organization_sync(
-        candidate_limit=organization_limit,
-        change_set_path=change_set_path,
+    sync_arguments = {
+        "candidate_limit": None if organization_all else organization_limit,
+        "change_set_path": change_set_path,
         **options,
-    )
+    }
+    if organization_all:
+        sync_arguments["refresh_all_organizations"] = True
+    sync = run_organization_sync(**sync_arguments)
     result = {
         "mode": "online_organization_sync",
         "organization_limit": organization_limit,
+        "organization_scope": "all" if organization_all else "bounded",
         "sync": sync,
         "change_set_path": str(change_set_path),
     }
     reports_requested = (
         report_limit is not None
+        or report_details_all_pending
         or report_discovery_limit is not None
         or report_discovery_all_due
     )
@@ -79,6 +93,10 @@ def run_limited_organization_ingestion(
             report_limit = int(report_limit)
             if report_limit <= 0:
                 raise ValueError("report_limit must be positive.")
+        if report_details_all_pending and report_limit is not None:
+            raise ValueError(
+                "Pass either report_limit or report_details_all_pending."
+            )
 
         manifest = pd.read_parquet(
             options.get(
@@ -113,11 +131,11 @@ def run_limited_organization_ingestion(
                 "invalid_overrides": [],
             }
 
-        if report_limit is not None:
+        if report_limit is not None or report_details_all_pending:
             selected = pd.read_parquet(DEFAULT_SELECTED_REPORTS_PATH)
             details_summary, _ = run_report_detail_batch(
                 selected,
-                limit=report_limit,
+                limit=None if report_details_all_pending else report_limit,
                 change_set_path=change_set_path,
             )
         else:

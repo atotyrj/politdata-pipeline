@@ -51,10 +51,13 @@ def test_no_change_run_restores_and_publishes_operational_checkpoint(
         GenerationStore(),
         tmp_path / "work",
         "weekly-10-1",
-        organization_limit=250,
+        organization_limit=None,
+        organization_all=True,
         report_discovery_limit=None,
         report_discovery_all_due=True,
         report_refresh_interval_days=0,
+        report_detail_limit=None,
+        report_details_all_pending=True,
         checkpoint_store=checkpoint,
     )
 
@@ -64,3 +67,7 @@ def test_no_change_run_restores_and_publishes_operational_checkpoint(
     assert calls[0]["report_discovery_limit"] is None
     assert calls[0]["report_discovery_all_due"] is True
     assert calls[0]["report_refresh_interval_days"] == 0
+    assert calls[0]["organization_all"] is True
+    assert calls[0]["organization_limit"] is None
+    assert calls[0]["report_details_all_pending"] is True
+    assert calls[0]["report_limit"] is None

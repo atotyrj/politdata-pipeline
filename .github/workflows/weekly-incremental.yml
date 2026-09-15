@@ -17,7 +17,7 @@ jobs:
   update:
     name: Restore, update, validate and publish
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
     env:
       GITHUB_TOKEN: ${{ github.token }}
       GENERATION_ID: weekly-${{ github.run_id }}-${{ github.run_attempt }}
@@ -42,17 +42,18 @@ jobs:
           --work-root "$RUNNER_TEMP/politdata-generation"
           --generation-id "$GENERATION_ID"
           --code-revision "$GITHUB_SHA"
-          --organization-limit 250
+          --all-organizations
           --all-due-report-discovery
           --report-refresh-interval-days 0
-          --report-detail-limit 1000
+          --all-pending-report-details
 
       - name: Write schedule summary
         if: ${{ always() }}
         run: |
           echo "## PolitData weekly incremental" >> "$GITHUB_STEP_SUMMARY"
           echo "- Schedule: Monday 03:37 Europe/Kyiv" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Report discovery: every due organization in one successful run" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Organization cards and report lists: complete scan" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Report details: every new or retryable report" >> "$GITHUB_STEP_SUMMARY"
           echo "- Operational progress is checkpointed even when data do not change" >> "$GITHUB_STEP_SUMMARY"
           echo "- Existing latest generation is retained on any failure" >> "$GITHUB_STEP_SUMMARY"
           echo "- A new release is published only when source changes are detected" >> "$GITHUB_STEP_SUMMARY"

@@ -178,6 +178,7 @@ def run_organization_sync(
     rolling_refresh_interval_days=7,
     rolling_refresh_limit=1400,
     candidate_limit=None,
+    refresh_all_organizations=False,
     change_set_path=DEFAULT_CURRENT_CHANGE_SET_PATH,
 ):
     """
@@ -278,7 +279,9 @@ def run_organization_sync(
         state_path=refresh_state_path,
     )
 
-    if enable_rolling_refresh:
+    if refresh_all_organizations:
+        rolling_candidates = current_manifest[["organization_id"]].copy()
+    elif enable_rolling_refresh:
         rolling_candidates = (
             select_rolling_refresh_candidates(
                 current_manifest,
@@ -728,6 +731,9 @@ def run_organization_sync(
                 len(
                     rolling_candidates
                 ),
+
+            "all_organizations":
+                bool(refresh_all_organizations),
         },
 
         "fetch_candidates":

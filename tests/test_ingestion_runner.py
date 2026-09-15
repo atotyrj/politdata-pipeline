@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -175,3 +177,64 @@ def test_report_flow_can_process_every_due_organization(monkeypatch):
 
     assert calls[0]["limit"] is None
     assert calls[0]["refresh_interval_days"] == 0
+
+
+def test_online_runner_can_use_complete_organization_and_report_scopes(
+    monkeypatch,
+):
+    calls = []
+    manifest = pd.DataFrame(
+        [{"organization_id": "o1", "root_party_id": "p1"}]
+    )
+    selected = pd.DataFrame([{"report_id": "r1", "organization_id": "o1"}])
+    monkeypatch.setattr(
+        "politdata.ingestion_runner.run_organization_sync",
+        lambda **kwargs: calls.append(("sync", kwargs)) or {"results": []},
+    )
+    monkeypatch.setattr(
+        "politdata.ingestion_runner.pd.read_parquet",
+        lambda path: manifest.copy()
+        if "organization_manifest" in str(path)
+        else selected.copy(),
+    )
+    monkeypatch.setattr(
+        "politdata.ingestion_runner.run_report_discovery_batch",
+        lambda _frame, **kwargs: (
+            calls.append(("discovery", kwargs))
+            or (
+                {
+                    "successful_organization_ids": [],
+                    "selected_organization_ids": [],
+                },
+                pd.DataFrame(),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "politdata.ingestion_runner.run_report_detail_batch",
+        lambda _frame, **kwargs: (
+            calls.append(("details", kwargs))
+            or ({"selected": 0}, pd.DataFrame())
+        ),
+    )
+
+    result = run_limited_organization_ingestion(
+        organization_limit=None,
+        organization_all=True,
+        report_discovery_all_due=True,
+        report_details_all_pending=True,
+        report_refresh_interval_days=0,
+        run_downstream=False,
+    )
+
+    assert calls[0] == (
+        "sync",
+        {
+            "candidate_limit": None,
+            "change_set_path": Path(result["change_set_path"]),
+            "refresh_all_organizations": True,
+        },
+    )
+    assert calls[1][1]["limit"] is None
+    assert calls[2][1]["limit"] is None
+    assert result["organization_scope"] == "all"

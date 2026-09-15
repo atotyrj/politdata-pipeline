@@ -70,9 +70,11 @@ def run_scheduled_incremental(
     generation_id,
     *,
     organization_limit=250,
+    organization_all=False,
     report_discovery_limit=500,
     report_discovery_all_due=False,
     report_detail_limit=1000,
+    report_details_all_pending=False,
     report_refresh_interval_days=7,
     code_revision=None,
     checkpoint_store=None,
@@ -95,14 +97,24 @@ def run_scheduled_incremental(
 
     with _working_directory(work_root):
         ingestion = run_limited_organization_ingestion(
-            organization_limit=int(organization_limit),
+            organization_limit=(
+                int(organization_limit)
+                if organization_limit is not None
+                else None
+            ),
+            organization_all=bool(organization_all),
             report_discovery_limit=(
                 int(report_discovery_limit)
                 if report_discovery_limit is not None
                 else None
             ),
             report_discovery_all_due=bool(report_discovery_all_due),
-            report_limit=int(report_detail_limit),
+            report_limit=(
+                int(report_detail_limit)
+                if report_detail_limit is not None
+                else None
+            ),
+            report_details_all_pending=bool(report_details_all_pending),
             report_refresh_interval_days=float(report_refresh_interval_days),
             run_downstream=True,
         )
