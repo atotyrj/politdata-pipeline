@@ -71,9 +71,11 @@ def run_scheduled_incremental(
     *,
     organization_limit=250,
     report_discovery_limit=500,
+    report_discovery_all_due=False,
     report_detail_limit=1000,
     report_refresh_interval_days=7,
     code_revision=None,
+    checkpoint_store=None,
 ):
     """Publish a new latest release only when factual source changes exist."""
 
@@ -84,11 +86,22 @@ def run_scheduled_incremental(
     work_root = Path(work_root)
     store.restore_latest(work_root)
     _normalize_restored_layout(work_root)
+    checkpoint_restore = None
+    if checkpoint_store is not None:
+        checkpoint_restore = checkpoint_store.restore_latest(
+            work_root,
+            base_generation_id=current_id,
+        )
 
     with _working_directory(work_root):
         ingestion = run_limited_organization_ingestion(
             organization_limit=int(organization_limit),
-            report_discovery_limit=int(report_discovery_limit),
+            report_discovery_limit=(
+                int(report_discovery_limit)
+                if report_discovery_limit is not None
+                else None
+            ),
+            report_discovery_all_due=bool(report_discovery_all_due),
             report_limit=int(report_detail_limit),
             report_refresh_interval_days=float(report_refresh_interval_days),
             run_downstream=True,
@@ -98,9 +111,18 @@ def run_scheduled_incremental(
             change_set["organization_changes"] or change_set["report_changes"]
         )
         if not has_changes:
+            checkpoint = None
+            if checkpoint_store is not None:
+                checkpoint = checkpoint_store.publish_checkpoint(
+                    work_root,
+                    generation_id,
+                    base_generation_id=current_id,
+                )
             return {
                 "status": "no_changes",
                 "previous_generation_id": current_id,
+                "checkpoint_restore": checkpoint_restore,
+                "checkpoint": checkpoint,
                 "ingestion": ingestion,
             }
 

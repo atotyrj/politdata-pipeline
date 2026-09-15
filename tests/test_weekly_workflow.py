@@ -10,6 +10,8 @@ def test_weekly_workflow_is_kyiv_local_bounded_and_serialized():
     assert "contents: write" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "--organization-limit 250" in workflow
-    assert "--report-discovery-limit 500" in workflow
+    assert "--report-discovery-limit 500" not in workflow
+    assert "--all-due-report-discovery" in workflow
+    assert "--report-refresh-interval-days 0" in workflow
     assert "--report-detail-limit 1000" in workflow
     assert "run_scheduled_incremental.py" in workflow

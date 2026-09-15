@@ -12,6 +12,7 @@ from politdata.github_releases import (
     GENERATION_POINTER_NAME,
     PUBLIC_CATALOG_NAME,
     GitHubReleaseGenerationStore,
+    GitHubOperationalCheckpointStore,
     ReleaseAssetTooLarge,
     build_generation_bundle,
 )
@@ -318,6 +319,56 @@ def test_release_store_rollback_and_delete_guard(tmp_path):
     assert store.read_latest()["generation_id"] == "g1"
     store.delete_generation("g2")
     assert store.list_generation_ids() == ["g1"]
+
+
+def test_operational_checkpoint_is_separate_from_latest_release(tmp_path):
+    client = MemoryReleaseClient()
+    source = tmp_path / "source"
+    state = source / "data" / "interim" / "state"
+    state.mkdir(parents=True)
+    organization_state = state / "organization_refresh_state.parquet"
+    report_state = state / "report_discovery_state.parquet"
+    organization_state.write_bytes(b"organizations-v1")
+    report_state.write_bytes(b"reports-v1")
+    store = GitHubOperationalCheckpointStore(
+        "atotyrj/politdata-pipeline", client=client
+    )
+
+    published = store.publish_checkpoint(
+        source,
+        "weekly-10-1",
+        base_generation_id="g1",
+    )
+
+    release = client.get_release_by_tag("politdata-operational-state")
+    assert release["draft"] is True
+    assert client.latest_id is None
+    assert published["status"] == "published"
+
+    organization_state.write_bytes(b"stale")
+    report_state.write_bytes(b"stale")
+    restored = store.restore_latest(source, base_generation_id="g1")
+
+    assert restored["status"] == "restored"
+    assert organization_state.read_bytes() == b"organizations-v1"
+    assert report_state.read_bytes() == b"reports-v1"
+
+
+def test_operational_checkpoint_never_overlays_another_generation(tmp_path):
+    client = MemoryReleaseClient()
+    source = tmp_path / "source"
+    state = source / "data" / "interim" / "state"
+    state.mkdir(parents=True)
+    (state / "organization_refresh_state.parquet").write_bytes(b"organizations")
+    (state / "report_discovery_state.parquet").write_bytes(b"reports")
+    store = GitHubOperationalCheckpointStore(
+        "atotyrj/politdata-pipeline", client=client
+    )
+    store.publish_checkpoint(source, "weekly-10-1", base_generation_id="g1")
+
+    result = store.restore_latest(source, base_generation_id="g2")
+
+    assert result == {"status": "not_found", "base_generation_id": "g2"}
 
 
 def test_bundle_rejects_single_file_over_configured_limit(tmp_path):

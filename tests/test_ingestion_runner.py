@@ -129,3 +129,49 @@ def test_report_flow_rebuilds_only_successfully_refreshed_snapshots(monkeypatch)
     assert calls[0] == ("build", {"organization_ids": ["o1"]})
     assert calls[1][2]["affected_organization_ids"] == ["o1"]
     assert result["reports"]["details"]["status"] == "not_requested"
+
+
+def test_report_flow_can_process_every_due_organization(monkeypatch):
+    calls = []
+    manifest = pd.DataFrame(
+        [{"organization_id": "o1", "root_party_id": "p1"}]
+    )
+    selected = pd.DataFrame([{"report_id": "r1", "organization_id": "o1"}])
+    monkeypatch.setattr(
+        "politdata.ingestion_runner.run_organization_sync",
+        lambda **_: {"results": []},
+    )
+    monkeypatch.setattr(
+        "politdata.ingestion_runner.pd.read_parquet",
+        lambda path: manifest.copy()
+        if "organization_manifest" in str(path)
+        else selected.copy(),
+    )
+    monkeypatch.setattr(
+        "politdata.ingestion_runner.run_report_discovery_batch",
+        lambda _frame, **kwargs: (
+            calls.append(kwargs)
+            or (
+                {
+                    "successful_organization_ids": [],
+                    "selected_organization_ids": [],
+                },
+                pd.DataFrame(),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "politdata.ingestion_runner.run_report_detail_batch",
+        lambda *_args, **_kwargs: ({"selected": 0}, pd.DataFrame()),
+    )
+
+    run_limited_organization_ingestion(
+        organization_limit=1,
+        report_limit=1,
+        report_discovery_all_due=True,
+        report_refresh_interval_days=0,
+        run_downstream=False,
+    )
+
+    assert calls[0]["limit"] is None
+    assert calls[0]["refresh_interval_days"] == 0

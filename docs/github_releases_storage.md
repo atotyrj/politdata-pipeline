@@ -101,13 +101,19 @@ Workflow **PolitData weekly incremental update** запускається щоп
 group, що й rehearsal, і виконує такий цикл:
 
 1. відновлює checksum-verified latest generation;
-2. лімітовано перевіряє картки організацій, списки звітів і нові report details;
+2. лімітовано перевіряє картки організацій, але за один успішний цикл обходить
+   списки звітів усіх організацій у due-черзі та завантажує лише потрібні report
+   details;
 3. запускає changed-only normalization, references та enrichment;
 4. при фактичних змінах повторно генерує 18 аналітичних Excel і запускає QA;
 5. створює новий immutable release та перемикає latest лише після успіху.
 
-Якщо змін немає, новий release не створюється. Якщо будь-який етап завершується
-помилкою, попередній latest release лишається активним і придатним до rollback.
+Якщо змін немає, новий публічний release не створюється. Прогрес report discovery
+та rolling organization refresh зберігається окремим checksum-verified ZIP у
+прихованому draft release `politdata-operational-state`. Checkpoint містить лише
+службові Parquet-черги, прив'язаний до конкретного базового generation ID і ніколи
+не змінює GitHub `latest`. Якщо будь-який етап завершується помилкою, попередній
+latest release лишається активним і придатним до rollback.
 
 Початкове production-покоління можна скласти з уже завантажених локальних даних
 через `scripts/assemble_existing_baseline.py`, без повторного RAW ingestion, а

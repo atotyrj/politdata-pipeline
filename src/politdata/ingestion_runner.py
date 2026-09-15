@@ -27,6 +27,7 @@ def run_limited_organization_ingestion(
     run_downstream=True,
     report_limit=None,
     report_discovery_limit=None,
+    report_discovery_all_due=False,
     report_refresh_interval_days=DEFAULT_REFRESH_INTERVAL_DAYS,
     sync_options=None,
 ):
@@ -59,14 +60,21 @@ def run_limited_organization_ingestion(
         "change_set_path": str(change_set_path),
     }
     reports_requested = (
-        report_limit is not None or report_discovery_limit is not None
+        report_limit is not None
+        or report_discovery_limit is not None
+        or report_discovery_all_due
     )
     if reports_requested:
-        if report_discovery_limit is None:
+        if report_discovery_all_due and report_discovery_limit is not None:
+            raise ValueError(
+                "Pass either report_discovery_limit or report_discovery_all_due."
+            )
+        if report_discovery_limit is None and not report_discovery_all_due:
             report_discovery_limit = organization_limit
-        report_discovery_limit = int(report_discovery_limit)
-        if report_discovery_limit <= 0:
-            raise ValueError("report_discovery_limit must be positive.")
+        if report_discovery_limit is not None:
+            report_discovery_limit = int(report_discovery_limit)
+            if report_discovery_limit <= 0:
+                raise ValueError("report_discovery_limit must be positive.")
         if report_limit is not None:
             report_limit = int(report_limit)
             if report_limit <= 0:

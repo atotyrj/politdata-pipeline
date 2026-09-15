@@ -43,7 +43,8 @@ jobs:
           --generation-id "$GENERATION_ID"
           --code-revision "$GITHUB_SHA"
           --organization-limit 250
-          --report-discovery-limit 500
+          --all-due-report-discovery
+          --report-refresh-interval-days 0
           --report-detail-limit 1000
 
       - name: Write schedule summary
@@ -51,5 +52,7 @@ jobs:
         run: |
           echo "## PolitData weekly incremental" >> "$GITHUB_STEP_SUMMARY"
           echo "- Schedule: Monday 03:37 Europe/Kyiv" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Report discovery: every due organization in one successful run" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Operational progress is checkpointed even when data do not change" >> "$GITHUB_STEP_SUMMARY"
           echo "- Existing latest generation is retained on any failure" >> "$GITHUB_STEP_SUMMARY"
           echo "- A new release is published only when source changes are detected" >> "$GITHUB_STEP_SUMMARY"

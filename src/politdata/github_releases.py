@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import mimetypes
 import os
@@ -32,6 +33,13 @@ BUNDLE_INDEX_NAME = "generation_bundle_index.json"
 GENERATION_MANIFEST_NAME = "generation_manifest.json"
 GENERATION_POINTER_NAME = "generation_pointer.json"
 PUBLIC_CATALOG_NAME = "public_artifacts.json"
+OPERATIONAL_CHECKPOINT_MANIFEST_NAME = "operational_checkpoint_manifest.json"
+OPERATIONAL_CHECKPOINT_RELEASE_TAG = "politdata-operational-state"
+OPERATIONAL_CHECKPOINT_ASSET_PREFIX = "operational-checkpoint-"
+DEFAULT_OPERATIONAL_CHECKPOINT_PATHS = (
+    "data/interim/state/organization_refresh_state.parquet",
+    "data/interim/state/report_discovery_state.parquet",
+)
 
 
 class GitHubReleaseError(RuntimeError):
@@ -459,6 +467,270 @@ def _safe_extract_zip(path, destination):
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info) as source, target.open("wb") as output:
                 shutil.copyfileobj(source, output)
+
+
+def _build_operational_checkpoint(
+    source_dir,
+    destination,
+    checkpoint_id,
+    base_generation_id,
+    *,
+    relative_paths=DEFAULT_OPERATIONAL_CHECKPOINT_PATHS,
+):
+    """Build one small, self-verifying ingestion-state checkpoint."""
+
+    checkpoint_id = _safe_generation_id(checkpoint_id)
+    base_generation_id = _safe_generation_id(base_generation_id)
+    source_dir = Path(source_dir).resolve()
+    destination = Path(destination)
+    files = []
+    for relative in relative_paths:
+        pure = PurePosixPath(str(relative))
+        if pure.is_absolute() or ".." in pure.parts:
+            raise GenerationIntegrityError(
+                f"Unsafe operational checkpoint path: {relative}"
+            )
+        path = (source_dir / Path(*pure.parts)).resolve()
+        try:
+            path.relative_to(source_dir)
+        except ValueError as error:
+            raise GenerationIntegrityError(
+                f"Operational checkpoint path escapes source: {relative}"
+            ) from error
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(path)
+        files.append(
+            {
+                "path": pure.as_posix(),
+                "size": path.stat().st_size,
+                "sha256": file_hash(path),
+            }
+        )
+
+    manifest = {
+        "schema_version": 1,
+        "checkpoint_id": checkpoint_id,
+        "base_generation_id": base_generation_id,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "files": files,
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(
+        destination,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=6,
+    ) as archive:
+        archive.writestr(
+            OPERATIONAL_CHECKPOINT_MANIFEST_NAME,
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ).encode("utf-8"),
+        )
+        for item in files:
+            archive.write(source_dir / item["path"], arcname=item["path"])
+    return manifest
+
+
+def _restore_operational_checkpoint(
+    archive_path,
+    destination,
+    *,
+    expected_base_generation_id,
+    allowed_paths=DEFAULT_OPERATIONAL_CHECKPOINT_PATHS,
+):
+    """Verify all checkpoint members before atomically replacing state files."""
+
+    destination = Path(destination).resolve()
+    allowed = {PurePosixPath(path).as_posix() for path in allowed_paths}
+    with tempfile.TemporaryDirectory(prefix="politdata-checkpoint-restore-") as temporary:
+        temporary = Path(temporary)
+        with zipfile.ZipFile(archive_path) as archive:
+            try:
+                manifest = json.loads(
+                    archive.read(OPERATIONAL_CHECKPOINT_MANIFEST_NAME).decode("utf-8")
+                )
+            except (KeyError, UnicodeDecodeError, ValueError) as error:
+                raise GenerationIntegrityError(
+                    "Operational checkpoint manifest is invalid."
+                ) from error
+            if manifest.get("schema_version") != 1:
+                raise GenerationIntegrityError(
+                    "Unsupported operational checkpoint schema."
+                )
+            if manifest.get("base_generation_id") != str(
+                expected_base_generation_id
+            ):
+                raise GenerationIntegrityError(
+                    "Operational checkpoint belongs to another data generation."
+                )
+            members = {
+                item.filename: item
+                for item in archive.infolist()
+                if not item.is_dir()
+            }
+            staged = []
+            for item in manifest.get("files") or []:
+                relative = PurePosixPath(str(item.get("path") or "")).as_posix()
+                if relative not in allowed or relative not in members:
+                    raise GenerationIntegrityError(
+                        f"Unexpected operational checkpoint path: {relative}"
+                    )
+                target = temporary / Path(*PurePosixPath(relative).parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(members[relative]) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                if target.stat().st_size != int(item["size"]):
+                    raise GenerationIntegrityError(
+                        f"Operational checkpoint size mismatch: {relative}"
+                    )
+                if file_hash(target) != item["sha256"]:
+                    raise GenerationIntegrityError(
+                        f"Operational checkpoint checksum mismatch: {relative}"
+                    )
+                staged.append((relative, target))
+            if {relative for relative, _path in staged} != allowed:
+                raise GenerationIntegrityError(
+                    "Operational checkpoint does not contain every required state file."
+                )
+
+        for relative, staged_path in staged:
+            target = destination / Path(*PurePosixPath(relative).parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged_path, target)
+    return manifest
+
+
+class GitHubOperationalCheckpointStore:
+    """Small mutable-progress channel, separate from public data generations."""
+
+    def __init__(
+        self,
+        repository,
+        token=None,
+        *,
+        client=None,
+        target_commitish="main",
+        release_tag=OPERATIONAL_CHECKPOINT_RELEASE_TAG,
+    ):
+        self.repository = str(repository)
+        self.client = client or GitHubReleaseClient(
+            repository,
+            token or os.environ.get("GITHUB_TOKEN"),
+        )
+        self.target_commitish = target_commitish
+        self.release_tag = str(release_tag)
+
+    def _find_release(self):
+        release = self.client.get_release_by_tag(self.release_tag)
+        if release is not None:
+            return release
+        return next(
+            (
+                candidate
+                for candidate in self.client.list_releases()
+                if str(candidate.get("tag_name") or "") == self.release_tag
+            ),
+            None,
+        )
+
+    def _release(self, *, create=False):
+        release = self._find_release()
+        if release is None and create:
+            release = self.client.create_release(
+                tag=self.release_tag,
+                name="PolitData operational checkpoints",
+                body=(
+                    "Private draft storage for resumable ingestion state. "
+                    "It never replaces the public latest data release."
+                ),
+                target_commitish=self.target_commitish,
+            )
+        return release
+
+    def _asset_name(self, checkpoint_id, base_generation_id):
+        checkpoint_id = _safe_generation_id(checkpoint_id)
+        base_generation_id = _safe_generation_id(base_generation_id)
+        return (
+            f"{OPERATIONAL_CHECKPOINT_ASSET_PREFIX}"
+            f"{base_generation_id}--{checkpoint_id}.zip"
+        )
+
+    def publish_checkpoint(
+        self,
+        source_dir,
+        checkpoint_id,
+        *,
+        base_generation_id,
+    ):
+        asset_name = self._asset_name(checkpoint_id, base_generation_id)
+        release = self._release(create=True)
+        with tempfile.TemporaryDirectory(prefix="politdata-checkpoint-build-") as temporary:
+            archive = Path(temporary) / asset_name
+            manifest = _build_operational_checkpoint(
+                source_dir,
+                archive,
+                checkpoint_id,
+                base_generation_id,
+            )
+            existing = _asset_map(release).get(asset_name)
+            if existing is not None:
+                if _asset_digest(existing) != file_hash(archive):
+                    raise GenerationIntegrityError(
+                        "Existing operational checkpoint differs from this run."
+                    )
+            else:
+                self.client.upload_asset(release, archive, name=asset_name)
+        return {
+            "status": "published",
+            "checkpoint_id": str(checkpoint_id),
+            "base_generation_id": str(base_generation_id),
+            "asset_name": asset_name,
+            "files": [item["path"] for item in manifest["files"]],
+        }
+
+    def restore_latest(self, destination, *, base_generation_id):
+        base_generation_id = _safe_generation_id(base_generation_id)
+        release = self._release()
+        if release is None:
+            return {
+                "status": "not_found",
+                "base_generation_id": base_generation_id,
+            }
+        prefix = f"{OPERATIONAL_CHECKPOINT_ASSET_PREFIX}{base_generation_id}--"
+        assets = sorted(
+            (
+                asset
+                for asset in release.get("assets") or []
+                if str(asset.get("name") or "").startswith(prefix)
+                and str(asset.get("name") or "").endswith(".zip")
+            ),
+            key=lambda asset: int(asset.get("id") or 0),
+            reverse=True,
+        )
+        if not assets:
+            return {
+                "status": "not_found",
+                "base_generation_id": base_generation_id,
+            }
+        asset = assets[0]
+        with tempfile.TemporaryDirectory(prefix="politdata-checkpoint-download-") as temporary:
+            archive = Path(temporary) / str(asset["name"])
+            self.client.download_asset(asset, archive)
+            manifest = _restore_operational_checkpoint(
+                archive,
+                destination,
+                expected_base_generation_id=base_generation_id,
+            )
+        return {
+            "status": "restored",
+            "checkpoint_id": manifest["checkpoint_id"],
+            "base_generation_id": base_generation_id,
+            "asset_name": asset["name"],
+        }
 
 
 class GitHubReleaseGenerationStore:
