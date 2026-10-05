@@ -29,6 +29,12 @@ from .storage import (
 GITHUB_API_VERSION = "2026-03-10"
 DEFAULT_MAX_RELEASE_ASSET_BYTES = 1_900_000_000
 RELEASE_ASSET_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+ZIP_LOCAL_HEADER_BYTES = 30
+ZIP_CENTRAL_DIRECTORY_HEADER_BYTES = 46
+ZIP_END_OF_CENTRAL_DIRECTORY_BYTES = 22
+ZIP64_END_RECORD_BYTES = 56
+ZIP64_END_LOCATOR_BYTES = 20
+ZIP64_ENTRY_COUNT_THRESHOLD = 65_535
 BUNDLE_INDEX_NAME = "generation_bundle_index.json"
 GENERATION_MANIFEST_NAME = "generation_manifest.json"
 GENERATION_POINTER_NAME = "generation_pointer.json"
@@ -292,13 +298,37 @@ def _generation_files(source_dir):
     return sorted(files, key=lambda item: item[0])
 
 
+def _stored_zip_entry_size(relative, size):
+    encoded_name_bytes = len(str(relative).encode("utf-8"))
+    return (
+        int(size)
+        + ZIP_LOCAL_HEADER_BYTES
+        + ZIP_CENTRAL_DIRECTORY_HEADER_BYTES
+        + 2 * encoded_name_bytes
+    )
+
+
+def _stored_zip_footer_size(entry_count):
+    size = ZIP_END_OF_CENTRAL_DIRECTORY_BYTES
+    if int(entry_count) >= ZIP64_ENTRY_COUNT_THRESHOLD:
+        size += ZIP64_END_RECORD_BYTES + ZIP64_END_LOCATOR_BYTES
+    return size
+
+
 def _bundle_groups(files, max_asset_bytes):
-    allowance = max_asset_bytes - 1024 * 1024
-    if allowance <= 0:
+    archive_limit = min(
+        int(max_asset_bytes),
+        RELEASE_ASSET_HARD_LIMIT_BYTES - 1,
+    )
+    if archive_limit <= ZIP_END_OF_CENTRAL_DIRECTORY_BYTES:
         raise ValueError("max_asset_bytes is too small.")
     by_root = {}
     for relative, path, size in files:
-        if size > allowance:
+        estimated_archive_size = (
+            _stored_zip_entry_size(relative, size)
+            + _stored_zip_footer_size(1)
+        )
+        if estimated_archive_size > archive_limit:
             raise ReleaseAssetTooLarge(
                 f"Generation file exceeds release asset limit: {relative} ({size} bytes)"
             )
@@ -308,16 +338,23 @@ def _bundle_groups(files, max_asset_bytes):
     groups = []
     for root in sorted(by_root):
         part = []
-        total = 0
+        entries_size = 0
         part_number = 1
         for item in by_root[root]:
-            if part and total + item[2] > allowance:
+            item_size = _stored_zip_entry_size(item[0], item[2])
+            candidate_count = len(part) + 1
+            candidate_size = (
+                entries_size
+                + item_size
+                + _stored_zip_footer_size(candidate_count)
+            )
+            if part and candidate_size > archive_limit:
                 groups.append((root, part_number, part))
                 part_number += 1
                 part = []
-                total = 0
+                entries_size = 0
             part.append(item)
-            total += item[2]
+            entries_size += item_size
         if part:
             groups.append((root, part_number, part))
     return groups

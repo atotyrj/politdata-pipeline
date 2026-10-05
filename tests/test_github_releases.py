@@ -386,8 +386,38 @@ def test_bundle_rejects_single_file_over_configured_limit(tmp_path):
             source,
             tmp_path / "bundle",
             "g1",
-            max_asset_bytes=1024 * 1024 + 1024,
+            max_asset_bytes=2048,
         )
+
+
+def test_bundle_splits_many_small_files_before_zip_overhead_exceeds_limit(
+    tmp_path,
+):
+    source = tmp_path / "source"
+    manifest = _generation(source)
+    for ordinal in range(80):
+        artifact = source / "raw" / f"small-file-{ordinal:03d}-with-long-name.json"
+        artifact.write_bytes(b"x")
+        relative = artifact.relative_to(source).as_posix()
+        manifest["artifact_checksums"][relative] = file_hash(artifact)
+    (source / GENERATION_MANIFEST_NAME).write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    max_asset_bytes = 12_000
+
+    index = build_generation_bundle(
+        source,
+        tmp_path / "bundle",
+        "g1",
+        max_asset_bytes=max_asset_bytes,
+    )
+
+    raw_assets = [
+        item for item in index["bundle_assets"]
+        if item["name"].startswith("generation-raw-")
+    ]
+    assert len(raw_assets) >= 2
+    assert all(item["size"] <= max_asset_bytes for item in raw_assets)
 
 
 def test_rehearsal_generation_is_small_valid_and_synthetic(tmp_path):
