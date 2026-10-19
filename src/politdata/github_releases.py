@@ -9,6 +9,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import tempfile
+import time
 from urllib.parse import quote
 import uuid
 import zipfile
@@ -29,6 +30,9 @@ from .storage import (
 GITHUB_API_VERSION = "2026-03-10"
 DEFAULT_MAX_RELEASE_ASSET_BYTES = 1_900_000_000
 RELEASE_ASSET_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_REQUEST_ATTEMPTS = 4
+DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
+RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 ZIP_LOCAL_HEADER_BYTES = 30
 ZIP_CENTRAL_DIRECTORY_HEADER_BYTES = 46
 ZIP_END_OF_CENTRAL_DIRECTORY_BYTES = 22
@@ -82,6 +86,8 @@ class GitHubReleaseClient:
         *,
         session=None,
         api_url="https://api.github.com",
+        request_attempts=DEFAULT_REQUEST_ATTEMPTS,
+        retry_backoff_seconds=DEFAULT_RETRY_BACKOFF_SECONDS,
     ):
         try:
             owner, repo = str(repository).split("/", 1)
@@ -96,6 +102,12 @@ class GitHubReleaseClient:
         self.repository = f"{owner}/{repo}"
         self.session = session or requests.Session()
         self.api_url = api_url.rstrip("/")
+        self.request_attempts = int(request_attempts)
+        self.retry_backoff_seconds = float(retry_backoff_seconds)
+        if self.request_attempts < 1:
+            raise ValueError("request_attempts must be at least 1.")
+        if self.retry_backoff_seconds < 0:
+            raise ValueError("retry_backoff_seconds cannot be negative.")
         self.headers = {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
@@ -111,13 +123,31 @@ class GitHubReleaseClient:
         headers = dict(self.headers)
         headers.update(kwargs.pop("headers", {}) or {})
         timeout = kwargs.pop("timeout", 120)
-        response = self.session.request(
-            method,
-            url,
-            headers=headers,
-            timeout=timeout,
-            **kwargs,
-        )
+        method = str(method).upper()
+        retryable_method = method in {"GET", "HEAD"}
+        for attempt in range(1, self.request_attempts + 1):
+            try:
+                response = self.session.request(
+                    method,
+                    url,
+                    headers=headers,
+                    timeout=timeout,
+                    **kwargs,
+                )
+            except requests.RequestException:
+                if not retryable_method or attempt == self.request_attempts:
+                    raise
+                self._wait_before_retry(attempt)
+                continue
+            if (
+                response.status_code in RETRYABLE_HTTP_STATUSES
+                and retryable_method
+                and attempt < self.request_attempts
+            ):
+                response.close()
+                self._wait_before_retry(attempt)
+                continue
+            break
         if response.status_code not in expected:
             detail = (getattr(response, "text", "") or "")[:500]
             raise GitHubReleaseError(
@@ -125,21 +155,20 @@ class GitHubReleaseClient:
             )
         return response
 
+    def _wait_before_retry(self, attempt):
+        delay = self.retry_backoff_seconds * (2 ** (int(attempt) - 1))
+        if delay:
+            time.sleep(delay)
+
     def get_release_by_tag(self, tag):
         url = f"{self.releases_url}/tags/{quote(str(tag), safe='')}"
-        response = self.session.request(
+        response = self._request(
             "GET",
             url,
-            headers=self.headers,
-            timeout=120,
+            expected=(200, 404),
         )
         if response.status_code == 404:
             return None
-        if response.status_code != 200:
-            detail = (getattr(response, "text", "") or "")[:500]
-            raise GitHubReleaseError(
-                f"GitHub API GET release by tag returned {response.status_code}: {detail}"
-            )
         return response.json()
 
     def get_release(self, release_id):
@@ -150,19 +179,13 @@ class GitHubReleaseClient:
         return response.json()
 
     def get_latest_release(self):
-        response = self.session.request(
+        response = self._request(
             "GET",
             f"{self.releases_url}/latest",
-            headers=self.headers,
-            timeout=120,
+            expected=(200, 404),
         )
         if response.status_code == 404:
             return None
-        if response.status_code != 200:
-            detail = (getattr(response, "text", "") or "")[:500]
-            raise GitHubReleaseError(
-                f"GitHub API GET latest release returned {response.status_code}: {detail}"
-            )
         return response.json()
 
     def list_releases(self):
@@ -256,22 +279,45 @@ class GitHubReleaseClient:
     def download_asset(self, asset, destination):
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        response = self._request(
-            "GET",
-            asset["url"],
-            headers={"Accept": "application/octet-stream"},
-            stream=True,
-            timeout=7200,
-        )
-        with destination.open("wb") as stream:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    stream.write(chunk)
-        if file_hash(destination) != _asset_digest(asset):
-            raise GenerationIntegrityError(
-                f"GitHub asset checksum mismatch: {asset.get('name')}"
-            )
-        return str(destination)
+        expected_digest = _asset_digest(asset)
+        last_error = None
+        for attempt in range(1, self.request_attempts + 1):
+            response = None
+            try:
+                response = self._request(
+                    "GET",
+                    asset["url"],
+                    headers={"Accept": "application/octet-stream"},
+                    stream=True,
+                    timeout=7200,
+                )
+                with destination.open("wb") as stream:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            stream.write(chunk)
+                if file_hash(destination) == expected_digest:
+                    return str(destination)
+                last_error = GenerationIntegrityError(
+                    f"GitHub asset checksum mismatch: {asset.get('name')}"
+                )
+            except requests.RequestException as error:
+                if response is None:
+                    raise GitHubReleaseError(
+                        "GitHub asset download request failed after "
+                        f"{self.request_attempts} attempts: {asset.get('name')}"
+                    ) from error
+                last_error = error
+            finally:
+                if response is not None:
+                    response.close()
+            if attempt < self.request_attempts:
+                self._wait_before_retry(attempt)
+        if isinstance(last_error, GenerationIntegrityError):
+            raise last_error
+        raise GitHubReleaseError(
+            f"GitHub asset download failed after {self.request_attempts} attempts: "
+            f"{asset.get('name')}"
+        ) from last_error
 
 
 def _generation_files(source_dir):

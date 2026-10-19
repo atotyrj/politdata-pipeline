@@ -4,6 +4,7 @@ from pathlib import Path
 import zipfile
 
 import pytest
+import requests
 
 from politdata.generation_maintenance import rollback_latest
 from politdata.github_releases import (
@@ -11,6 +12,7 @@ from politdata.github_releases import (
     GENERATION_MANIFEST_NAME,
     GENERATION_POINTER_NAME,
     PUBLIC_CATALOG_NAME,
+    GitHubReleaseClient,
     GitHubReleaseGenerationStore,
     GitHubOperationalCheckpointStore,
     ReleaseAssetTooLarge,
@@ -121,6 +123,94 @@ class MemoryReleaseClient:
         if file_hash(destination) != asset["digest"].split(":", 1)[1]:
             raise GenerationIntegrityError("GitHub asset checksum mismatch")
         return str(destination)
+
+
+class DownloadResponse:
+    status_code = 200
+    text = ""
+
+    def __init__(self, chunks, *, stream_error=None):
+        self.chunks = list(chunks)
+        self.stream_error = stream_error
+        self.closed = False
+
+    def iter_content(self, chunk_size):
+        del chunk_size
+        yield from self.chunks
+        if self.stream_error is not None:
+            raise self.stream_error
+
+    def close(self):
+        self.closed = True
+
+
+class SequencedSession:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def request(self, *args, **kwargs):
+        del args, kwargs
+        outcome = self.outcomes[self.calls]
+        self.calls += 1
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _download_asset(payload=b"complete"):
+    return {
+        "name": "latest.json",
+        "url": "https://api.github.test/assets/1",
+        "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def test_download_asset_retries_connection_failure_before_response(tmp_path):
+    payload = b"complete"
+    session = SequencedSession(
+        [
+            requests.ConnectionError("remote disconnected"),
+            DownloadResponse([payload]),
+        ]
+    )
+    client = GitHubReleaseClient(
+        "atotyrj/politdata-pipeline",
+        "token",
+        session=session,
+        api_url="https://api.github.test",
+        retry_backoff_seconds=0,
+    )
+
+    destination = tmp_path / "latest.json"
+    client.download_asset(_download_asset(payload), destination)
+
+    assert destination.read_bytes() == payload
+    assert session.calls == 2
+
+
+def test_download_asset_restarts_after_stream_disconnect(tmp_path):
+    payload = b"complete"
+    interrupted = DownloadResponse(
+        [b"partial"],
+        stream_error=requests.ConnectionError("stream disconnected"),
+    )
+    completed = DownloadResponse([payload])
+    session = SequencedSession([interrupted, completed])
+    client = GitHubReleaseClient(
+        "atotyrj/politdata-pipeline",
+        "token",
+        session=session,
+        api_url="https://api.github.test",
+        retry_backoff_seconds=0,
+    )
+
+    destination = tmp_path / "latest.json"
+    client.download_asset(_download_asset(payload), destination)
+
+    assert destination.read_bytes() == payload
+    assert session.calls == 2
+    assert interrupted.closed is True
 
 
 def _generation(path, generation_id="g1", ordinal=1):
