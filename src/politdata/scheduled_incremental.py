@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import hashlib
+import json
 import os
 import shutil
 import uuid
 
 from .analytical_excel import export_analytical_workbooks
 from .change_set import load_change_set
+from .excel_snapshot import materialize_current_excel_inputs
 from .ingestion_runner import run_limited_organization_ingestion
 from .production_baseline import write_generation_manifest
 from .qa import validate_enriched_output
 from .storage import payload_hash
+
+
+ANALYTICAL_EXCEL_CONTRACT_VERSION = 2
 
 
 @contextmanager
@@ -40,16 +46,28 @@ def _normalize_restored_layout(root: Path) -> None:
             os.replace(legacy, canonical)
 
 
-def _replace_outputs(root: Path, summary) -> None:
+def _replace_outputs(root: Path, summary) -> dict:
     temporary = root / f".outputs.{uuid.uuid4().hex[:8]}.tmp"
     current = root / "outputs"
     backup = root / f".outputs.{uuid.uuid4().hex[:8]}.backup"
-    export_analytical_workbooks(
-        enriched_root=root / "data" / "processed" / "enriched_v0_1",
-        normalized_root=root / "data" / "processed" / "normalized_v0_1",
-        output_dir=temporary,
-    )
+    snapshot = root / f".excel-inputs.{uuid.uuid4().hex[:8]}.tmp"
     try:
+        inputs = materialize_current_excel_inputs(root, snapshot)
+        qa = validate_enriched_output(
+            inputs["enriched_root"],
+            organization_reference=(
+                inputs["enriched_root"]
+                / "reference"
+                / "organization_reference.parquet"
+            ),
+            enforce_regression_baseline=False,
+        )
+        generated = export_analytical_workbooks(
+            enriched_root=inputs["enriched_root"],
+            normalized_root=inputs["normalized_root"],
+            output_dir=temporary,
+        )
+        summary.extend(generated)
         if current.exists():
             os.replace(current, backup)
         os.replace(temporary, current)
@@ -61,7 +79,26 @@ def _replace_outputs(root: Path, summary) -> None:
             os.replace(backup, current)
         raise
     finally:
+        shutil.rmtree(snapshot, ignore_errors=True)
         shutil.rmtree(temporary, ignore_errors=True)
+    return qa
+
+
+def _file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _published_excel_state(root: Path) -> dict:
+    manifest_path = Path(root) / "generation_manifest.json"
+    if not manifest_path.exists():
+        return {}
+    with manifest_path.open("r", encoding="utf-8") as stream:
+        manifest = json.load(stream)
+    return manifest.get("metadata", {})
 
 
 def run_scheduled_incremental(
@@ -79,7 +116,7 @@ def run_scheduled_incremental(
     code_revision=None,
     checkpoint_store=None,
 ):
-    """Publish a new latest release only when factual source changes exist."""
+    """Publish current data changes or repair stale analytical Excel outputs."""
 
     current = store.read_latest()
     if current is None:
@@ -122,7 +159,17 @@ def run_scheduled_incremental(
         has_changes = bool(
             change_set["organization_changes"] or change_set["report_changes"]
         )
-        if not has_changes:
+        analysis_manifest_hash = _file_hash(
+            Path("data/interim/reports/analysis_selected_reports_manifest.parquet")
+        )
+        published_excel_state = _published_excel_state(work_root)
+        excel_needs_refresh = bool(
+            published_excel_state.get("analysis_manifest_hash")
+            != analysis_manifest_hash
+            or published_excel_state.get("analytical_excel_contract_version")
+            != ANALYTICAL_EXCEL_CONTRACT_VERSION
+        )
+        if not has_changes and not excel_needs_refresh:
             checkpoint = None
             if checkpoint_store is not None:
                 checkpoint = checkpoint_store.publish_checkpoint(
@@ -138,15 +185,8 @@ def run_scheduled_incremental(
                 "ingestion": ingestion,
             }
 
-        qa = validate_enriched_output(
-            "data/processed/enriched_v0_1",
-            organization_reference=(
-                "data/processed/enriched_v0_1/reference/organization_reference.parquet"
-            ),
-            enforce_regression_baseline=False,
-        )
         excel_summary = []
-        _replace_outputs(work_root, excel_summary)
+        qa = _replace_outputs(work_root, excel_summary)
         manifest = write_generation_manifest(
             work_root,
             generation_id,
@@ -162,6 +202,13 @@ def run_scheduled_incremental(
             metadata={
                 "previous_generation_id": current_id,
                 "change_set_run_id": change_set["run_id"],
+                "analysis_manifest_hash": analysis_manifest_hash,
+                "analytical_excel_contract_version": (
+                    ANALYTICAL_EXCEL_CONTRACT_VERSION
+                ),
+                "excel_refresh_without_source_changes": bool(
+                    excel_needs_refresh and not has_changes
+                ),
             },
             # publish_generation performs the complete checksum verification
             # immediately before upload, so avoid an identical extra pass here.
