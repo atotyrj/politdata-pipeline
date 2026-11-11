@@ -215,18 +215,32 @@ def build_incremental_reference_frames(
         )
     ].reset_index(drop=True)
 
+    current_analysis_report_ids = set(
+        analysis_manifest["analysis_selected_report_id"]
+        .dropna()
+        .astype(str)
+    )
     manifest = analysis_manifest[
         analysis_manifest[
             "analysis_selected_report_id"
         ].astype(str).isin(affected_report_ids)
     ].copy()
-    deleted_report_ids = set(
+
+    # The dependency plan is deliberately conservative: organization changes
+    # pull in report IDs from the previously published report context.  A
+    # report can therefore be affected while no longer being selected by the
+    # current analysis manifest (for example, when a manual override becomes
+    # invalid after report discovery).  Such IDs are tombstones, not a broken
+    # manifest precondition.  Publishing them as deletions removes their stale
+    # reference and enrichment partitions downstream.
+    deleted_report_ids = affected_report_ids - current_analysis_report_ids
+    deleted_report_ids.update(
         manifest.loc[
             manifest["organization_id"].astype(str).isin(
                 deleted_organization_ids
             ),
             "analysis_selected_report_id",
-        ].astype(str)
+        ].dropna().astype(str)
     )
     active_report_ids = affected_report_ids - deleted_report_ids
     manifest = manifest[

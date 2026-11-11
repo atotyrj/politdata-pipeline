@@ -79,7 +79,7 @@ def test_builds_scoped_reference_frames_with_existing_builders():
     assert len(frames["state_funding_account_reference"]) == 1
 
 
-def test_missing_analysis_manifest_report_is_rejected():
+def test_report_retired_from_analysis_manifest_is_deleted():
     plan = {
         "closure": {
             "affected_organization_ids": ["p1"],
@@ -131,16 +131,82 @@ def test_missing_analysis_manifest_report_is_rejected():
         "payment_type_detail_source",
     ])
 
-    try:
-        build_incremental_reference_frames(
-            plan,
-            organizations=organizations,
-            addresses=addresses,
-            analysis_manifest=empty_manifest,
-            property_moneys=property_moneys,
-            state_funding=state_funding,
-        )
-    except ValueError as exc:
-        assert "missing from analysis manifest" in str(exc)
-    else:
-        raise AssertionError("Expected missing-manifest precondition")
+    frames = build_incremental_reference_frames(
+        plan,
+        organizations=organizations,
+        addresses=addresses,
+        analysis_manifest=empty_manifest,
+        property_moneys=property_moneys,
+        state_funding=state_funding,
+    )
+
+    assert frames["deleted_report_ids"] == ["new-report"]
+    assert frames["report_context"].empty
+    assert frames["report_account_reference"].empty
+
+
+def test_invalidated_override_is_deleted_while_replacement_stays_active():
+    plan = {
+        "closure": {
+            "affected_organization_ids": ["p1"],
+            "affected_report_ids": ["official-report", "override-report"],
+        },
+        "roots": {
+            "deleted_organization_ids": [],
+        },
+    }
+    organizations = pd.DataFrame([{
+        "organization_id": "p1",
+        "root_party_id": "p1",
+        "entity_type": "party",
+        "code": "1",
+        "name": "Party",
+    }])
+    addresses = pd.DataFrame([{
+        "organization_id": "p1",
+        "address_type": "register",
+        "region": "Київ",
+    }])
+    analysis_manifest = pd.DataFrame([{
+        "report_id": "official-report",
+        "organization_id": "p1",
+        "root_party_id": "p1",
+        "year": 2025,
+        "quarter": 2,
+        "official_selected_report_id": "official-report",
+        "analysis_selected_report_id": "official-report",
+        "analysis_selection_method": "official",
+        "analysis_override": False,
+    }])
+    property_moneys = pd.DataFrame(columns=[
+        "source_report_id",
+        "organization_id",
+        "root_party_id",
+        "party_account_iban",
+        "party_account_iban_source",
+        "party_account_type_source",
+        "party_account_type_analytical",
+    ])
+    state_funding = pd.DataFrame(columns=[
+        "source_report_id",
+        "organization_id",
+        "root_party_id",
+        "receiver_account_iban_canonical",
+        "payment_amount",
+        "payment_operation_date",
+        "payment_type_detail_source",
+    ])
+
+    frames = build_incremental_reference_frames(
+        plan,
+        organizations=organizations,
+        addresses=addresses,
+        analysis_manifest=analysis_manifest,
+        property_moneys=property_moneys,
+        state_funding=state_funding,
+    )
+
+    assert frames["deleted_report_ids"] == ["override-report"]
+    assert frames["report_context"]["source_report_id"].tolist() == [
+        "official-report"
+    ]
